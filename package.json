@@ -1,0 +1,28 @@
+{
+  "name": "memory-local-enhanced",
+  "version": "1.0.0",
+  "description": "纯算法长期记忆插件 - 0 API / 可选 LLM 增强",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "keywords": ["openclaw", "memory", "long-term-memory"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^9.4.0",
+    "lru-cache": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "openclaw": {
+    "plugins": {
+      "slots": {
+        "memory": "memory-local-enhanced"
+      }
+    }
+  }
+}

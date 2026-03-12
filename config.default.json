@@ -1,0 +1,16 @@
+{
+  "autoCapture": true,
+  "autoRecall": true,
+  "maxResults": 5,
+  "maxContextChars": 500,
+  "cacheEnabled": true,
+  "cleanupDays": 90,
+  "llm": {
+    "enabled": false,
+    "provider": "minimax",
+    "thresholdLength": 100,
+    "apiKey": "",
+    "model": "abab6.5s-chat",
+    "baseURL": "https://api.minimax.chat/v1"
+  }
+}
