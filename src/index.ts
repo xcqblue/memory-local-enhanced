@@ -186,7 +186,7 @@ class LLMClient {
   private log: any;
   constructor(config: Config['llm'], log: any) { this.config = config; this.log = log; }
   async isCoreMemory(content: string): Promise<{ isCore: boolean; confidence: number }> {
-    const localResult = isCoreKeyword(content, DEFAULT_CONFIG.coreKeywords);
+    const localResult = isCoreKeyword(content, this.config.coreKeywords);
     if (localResult) return { isCore: true, confidence: 1.0 };
     if (!this.config.enabled) return { isCore: false, confidence: 0.5 };
     try {
@@ -462,7 +462,8 @@ const algoMemoryPlugin = {
       { name: 'algo_memory_clear', desc: '清空记忆', p: { agentId: 'string', keepCore: 'boolean' } },
       { name: 'algo_memory_update', desc: '更新记忆', p: { agentId: 'string', memoryId: 'string', content: 'string' } },
       { name: 'algo_memory_export', desc: '导出记忆', p: { agentId: 'string' } },
-      { name: 'algo_memory_import', desc: '导入记忆', p: { agentId: 'string', memories: { type: 'array' } } }
+      { name: 'algo_memory_import', desc: '导入记忆', p: { agentId: 'string', memories: { type: 'array' } } },
+      { name: 'algo_memory_session', desc: '获取Session记忆', p: { agentId: 'string' } }
     ];
 
     tools.forEach(tool => {
@@ -483,6 +484,7 @@ const algoMemoryPlugin = {
               case 'algo_memory_update': result = { success: plugin.updateMemory(params.agentId, params.memoryId, params.content) }; break;
               case 'algo_memory_export': result = plugin.exportMemories(params.agentId); break;
               case 'algo_memory_import': result = { imported: plugin.importMemories(params.agentId, params.memories) }; break;
+              case 'algo_memory_session': result = plugin.getSessionMemory(params.agentId); break;
             }
             return { content: [{ type: 'text', text: JSON.stringify(result) }] };
           } catch (err: any) { return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true }; }
@@ -506,7 +508,13 @@ const algoMemoryPlugin = {
       if (cfg.autoRecall) {
         const userMsg = messages.find((m: any) => m.role === 'user');
         if (userMsg && shouldRetrieve(userMsg.content || '', cfg.adaptiveRetrieval || DEFAULT_CONFIG.adaptiveRetrieval)) {
-          await plugin.recall(agentId, userMsg.content || '');
+          const recallResult = await plugin.recall(agentId, userMsg.content || '');
+          // 将召回结果添加到 session memory，供后续工具使用
+          if (recallResult.hasMemory && recallResult.memories.length > 0) {
+            const recallText = recallResult.memories.map(m => m.content).join('\n');
+            plugin.addSessionMemory(agentId, `[召回] ${recallText}`);
+            log.info(`[algo-memory] 自动召回: ${recallResult.memories.length} 条记忆`);
+          }
         }
       }
     });
