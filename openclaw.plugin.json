@@ -2,7 +2,7 @@
   "id": "algo-memory",
   "name": "algo-memory",
   "description": "纯算法长期记忆插件 - 0 API，可选 LLM 增强",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "kind": "memory",
   "homepage": "https://github.com/xcqblue/algo-memory",
   "configSchema": {
@@ -26,6 +26,7 @@
       "mmr": { "type": "object", "properties": { "enabled": {}, "threshold": {} } },
       "lengthNorm": { "type": "object", "description": "长度归一化", "properties": { "enabled": {}, "anchor": {} } },
       "hardMinScore": { "type": "object", "description": "硬最低分", "properties": { "enabled": {}, "threshold": {} } },
+      "capturePerTurn": { "type": "number", "default": 3, "description": "每轮最多写入记忆数" },
       "tier": { "type": "object", "description": "三层晋升", "properties": { "enabled": {}, "coreThreshold": {}, "peripheralThreshold": {}, "ageDays": {} } },
       "scopes": { "type": "object", "properties": { "enabled": {}, "defaultScope": {} } },
       "llm": { "type": "object", "properties": { "enabled": {}, "provider": {}, "apiKey": {}, "model": {}, "baseURL": {} } },

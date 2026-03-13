@@ -1,7 +1,7 @@
 /**
- * algo-memory v1.3.0
+ * algo-memory v1.4.0
  * 纯算法长期记忆插件 - 0 API / 可选 LLM 增强
- * 借鉴 memory-lancedb-pro 完整进阶功能
+ * 借鉴 memory-lancedb-pro 架构优化
  */
 
 import LRUCache from 'lru-cache';
@@ -27,14 +27,16 @@ interface Config {
   sessionMemory: { enabled: boolean; maxSessionItems: number };
   // 进阶功能
   weibullDecay: { enabled: boolean; shape: number; scale: number };
-  reinforcement: { enabled: boolean; factor: number; maxMultiplier: number }; // 访问强化
-  mmr: { enabled: boolean; threshold: number }; // 多样性去重
-  lengthNorm: { enabled: boolean; anchor: number }; // 长度归一化
-  hardMinScore: { enabled: boolean; threshold: number }; // 硬最低分
+  reinforcement: { enabled: boolean; factor: number; maxMultiplier: number };
+  mmr: { enabled: boolean; threshold: number };
+  lengthNorm: { enabled: boolean; anchor: number };
+  hardMinScore: { enabled: boolean; threshold: number };
   // 三层晋升
   tier: { enabled: boolean; coreThreshold: number; peripheralThreshold: number; ageDays: number };
   // 多 Scope
   scopes: { enabled: boolean; defaultScope: string };
+  // 架构优化
+  capturePerTurn: number; // 每轮最多写入数
   // LLM
   llm: { enabled: boolean; provider: string; apiKey: string; model: string; baseURL: string };
   threshold: { useLlmForCore: boolean; useLlmForExtract: boolean; useLlmForDedup: boolean; minConfidence: number };
@@ -56,14 +58,16 @@ const DEFAULT_CONFIG: Config = {
   sessionMemory: { enabled: false, maxSessionItems: 10 },
   // 进阶
   weibullDecay: { enabled: false, shape: 1.5, scale: 90 },
-  reinforcement: { enabled: false, factor: 0.5, maxMultiplier: 3 }, // 访问强化
+  reinforcement: { enabled: false, factor: 0.5, maxMultiplier: 3 },
   mmr: { enabled: false, threshold: 0.85 },
-  lengthNorm: { enabled: false, anchor: 500 }, // 长度归一化
-  hardMinScore: { enabled: false, threshold: 0.35 }, // 硬最低分
+  lengthNorm: { enabled: false, anchor: 500 },
+  hardMinScore: { enabled: false, threshold: 0.35 },
   // 三层晋升
   tier: { enabled: false, coreThreshold: 10, peripheralThreshold: 0.15, ageDays: 60 },
   // Scope
   scopes: { enabled: false, defaultScope: 'agent' },
+  // 架构优化
+  capturePerTurn: 3, // 每轮最多写入3条
   // LLM
   llm: { enabled: false, provider: 'openai', apiKey: '', model: 'gpt-4o-mini', baseURL: 'https://api.openai.com/v1' },
   threshold: { useLlmForCore: false, useLlmForExtract: false, useLlmForDedup: false, minConfidence: 0.8 }
@@ -77,6 +81,18 @@ function extractKeywords(content: string): string {
   return [...new Set(words)].slice(0, 10).join(',');
 }
 function isCoreKeyword(content: string, keywords: string[]): boolean { return keywords.some(k => content.includes(k)); }
+
+// 文本归一化 (借鉴 memory-lancedb-pro)
+function normalizeText(text: string): string {
+  let normalized = text.trim();
+  // 去除 addressing (如 @bot 或 @agent)
+  normalized = normalized.replace(/^@\w+\s+/, '');
+  // 去除多余空白
+  normalized = normalized.replace(/\s+/g, ' ').trim();
+  // 去除 OpenClaw 注入前缀
+  normalized = normalized.replace(/^(以下是|根据|按照).*?:?\s*/i, '');
+  return normalized;
+}
 
 // 噪声过滤
 function isNoise(content: string, config: Config['noiseFilter']): boolean {
@@ -95,20 +111,15 @@ function isNoise(content: string, config: Config['noiseFilter']): boolean {
   return false;
 }
 
-// CJK 字符检测 & 自适应检索 (含强制关键词)
+// CJK + 自适应检索
 function shouldRetrieve(query: string, config: Config['adaptiveRetrieval']): boolean {
   if (!config.enabled) return true;
   if (!query || query.trim().length < 1) return false;
-  
-  // 强制检索关键词
   const lowerQuery = query.toLowerCase();
   if (config.forceKeywords?.some(k => lowerQuery.includes(k))) return true;
-  
-  // CJK 字符阈值 (中文 6, 英文 15)
   const isCJK = /[\u4e00-\u9fa5]/.test(query);
   const minLen = isCJK ? 6 : 15;
   if (query.trim().length < minLen) return false;
-  
   return true;
 }
 
@@ -134,24 +145,21 @@ function lengthNorm(content: string, anchor: number): number {
   return anchor / len;
 }
 
-// 访问强化 (reinforcement)
+// 访问强化
 function reinforcementFactor(accessCount: number, config: Config['reinforcement']): number {
   if (!config.enabled || accessCount <= 1) return 1.0;
-  // 每次访问增加 factor，上限 maxMultiplier
   return Math.min(config.maxMultiplier, 1.0 + (accessCount - 1) * config.factor);
 }
 
-// MMR 多样性去重
+// MMR
 function mmrDeduplicate(items: any[], config: Config['mmr']): any[] {
   if (!config.enabled || items.length <= 1) return items;
   const result: any[] = [];
-  const scores = items.map((m, i) => ({ ...m, _originalIndex: i, _score: m._score || m.importance }));
-  
+  const scores = items.map(m => ({ ...m, _score: m._score || m.importance }));
   while (scores.length > 0) {
     scores.sort((a, b) => b._score - a._score);
     const top = scores.shift()!;
     result.push(top);
-    
     const remaining: any[] = [];
     for (const item of scores) {
       const sim = jaccardSimilarity(top.content, item.content);
@@ -163,12 +171,10 @@ function mmrDeduplicate(items: any[], config: Config['mmr']): any[] {
   return result;
 }
 
-// 三层晋升判断
+// 三层晋升
 function getTier(importance: number, accessCount: number, daysOld: number, config: Config['tier']): 'core' | 'working' | 'peripheral' {
   if (!config.enabled) return importance >= 1.0 ? 'core' : 'working';
-  
   const compositeScore = importance * (1 + Math.log10(accessCount + 1));
-  
   if (accessCount >= config.coreThreshold || compositeScore >= 0.7) return 'core';
   if (compositeScore < config.peripheralThreshold || daysOld > config.ageDays) return 'peripheral';
   return 'working';
@@ -179,7 +185,6 @@ class LLMClient {
   private config: Config['llm'];
   private log: any;
   constructor(config: Config['llm'], log: any) { this.config = config; this.log = log; }
-
   async isCoreMemory(content: string): Promise<{ isCore: boolean; confidence: number }> {
     const localResult = isCoreKeyword(content, DEFAULT_CONFIG.coreKeywords);
     if (localResult) return { isCore: true, confidence: 1.0 };
@@ -188,17 +193,11 @@ class LLMClient {
       const response = await fetch(`${this.config.baseURL}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.apiKey}` },
-        body: JSON.stringify({
-          model: this.config.model,
-          messages: [{ role: 'system', content: '判断是否重要需要长期记住。回复JSON: {"isCore": true/false, "confidence": 0-1}' }, { role: 'user', content }],
-          max_tokens: 100, temperature: 0.1
-        })
+        body: JSON.stringify({ model: this.config.model, messages: [{ role: 'system', content: '判断是否重要需要长期记住。回复JSON: {"isCore": true/false, "confidence": 0-1}' }, { role: 'user', content }], max_tokens: 100, temperature: 0.1 })
       });
-      const data = await response.json();
-      return JSON.parse(data.choices[0].message.content);
+      return JSON.parse((await response.json()).choices[0].message.content);
     } catch (err) { this.log.error('[algo-memory] LLM错误:', err); return { isCore: false, confidence: 0.5 }; }
   }
-
   async extractKeywords(content: string): Promise<string> {
     const local = extractKeywords(content);
     if (!this.config.enabled) return local;
@@ -206,17 +205,11 @@ class LLMClient {
       const response = await fetch(`${this.config.baseURL}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.apiKey}` },
-        body: JSON.stringify({
-          model: this.config.model,
-          messages: [{ role: 'system', content: '提取关键词，最多10个。回复JSON: {"keywords": ["k1", "k2"]}' }, { role: 'user', content }],
-          max_tokens: 200, temperature: 0.2
-        })
+        body: JSON.stringify({ model: this.config.model, messages: [{ role: 'system', content: '提取关键词，最多10个。回复JSON: {"keywords": ["k1", "k2"]}' }, { role: 'user', content }], max_tokens: 200, temperature: 0.2 })
       });
-      const data = await response.json();
-      return JSON.parse(data.choices[0].message.content).keywords.join(',');
+      return JSON.parse((await response.json()).choices[0].message.content).keywords.join(',');
     } catch (err) { return local; }
   }
-
   async isDuplicate(c1: string, c2: string): Promise<{ isDuplicate: boolean; similarity: number }> {
     const sim = jaccardSimilarity(c1, c2);
     if (sim >= 0.98 || sim < 0.5) return { isDuplicate: sim >= 0.98, similarity: sim };
@@ -225,11 +218,7 @@ class LLMClient {
       const response = await fetch(`${this.config.baseURL}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.apiKey}` },
-        body: JSON.stringify({
-          model: this.config.model,
-          messages: [{ role: 'system', content: '判断是否重复。回复JSON: {"isDuplicate": true/false, "similarity": 0-1}' }, { role: 'user', content: `内容1: ${c1}\n内容2: ${c2}` }],
-          max_tokens: 100, temperature: 0.1
-        })
+        body: JSON.stringify({ model: this.config.model, messages: [{ role: 'system', content: '判断是否重复。回复JSON: {"isDuplicate": true/false, "similarity": 0-1}' }, { role: 'user', content: `内容1: ${c1}\n内容2: ${c2}` }], max_tokens: 100, temperature: 0.1 })
       });
       return JSON.parse((await response.json()).choices[0].message.content);
     } catch (err) { return { isDuplicate: sim >= 0.85, similarity: sim }; }
@@ -265,7 +254,8 @@ class MemoryPlugin {
         id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, scope TEXT DEFAULT 'agent',
         content TEXT NOT NULL, type TEXT DEFAULT 'other', tier TEXT DEFAULT 'working',
         layer TEXT DEFAULT 'general', keywords TEXT, importance REAL DEFAULT 0.5,
-        access_count INTEGER DEFAULT 0, created_at INTEGER, last_accessed INTEGER, content_hash TEXT
+        access_count INTEGER DEFAULT 0, created_at INTEGER, last_accessed INTEGER, content_hash TEXT,
+        metadata TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_agent ON memories(agent_id);
       CREATE INDEX IF NOT EXISTS idx_tier ON memories(tier);
@@ -273,22 +263,32 @@ class MemoryPlugin {
       CREATE INDEX IF NOT EXISTS idx_agent_hash ON memories(agent_id, content_hash);
     `);
     this.log.info('[algo-memory] 数据库初始化:', dbPath);
+    this.log.info(`[algo-memory] 每轮最多写入: ${this.config.capturePerTurn} 条`);
     this.cleanupInterval = setInterval(() => this.cleanup(), 24 * 60 * 60 * 1000);
   }
 
   async store(AgentId: string, messages: any[]): Promise<void> {
     if (!AgentId || !messages?.length || !this.db) return;
+    
+    let captured = 0;
+    const maxCapture = this.config.capturePerTurn || 3;
+    
     for (const msg of messages) {
-      if (msg.role !== 'user' || isNoise(msg.content, this.config.noiseFilter)) continue;
-      const content = msg.content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const contentHash = hashContent(content);
+      if (captured >= maxCapture) break;
+      if (msg.role !== 'user') continue;
+      
+      // 文本归一化
+      const content = normalizeText(msg.content);
+      if (!content || isNoise(content, this.config.noiseFilter)) continue;
+      
+      const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const contentHash = hashContent(safeContent);
 
       // 精确查重
-      const existing = this.db.prepare('SELECT id, content FROM memories WHERE agent_id = ? AND content_hash = ?').get(AgentId, contentHash) as { id: string; content: string } | undefined;
+      const existing = this.db.prepare('SELECT id FROM memories WHERE agent_id = ? AND content_hash = ?').get(AgentId, contentHash) as { id: string } | undefined;
       if (existing) {
         this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(Date.now(), existing.id);
         this.cache.delete(`recall:${AgentId}`);
-        // 三层晋升检查
         this.updateTier(existing.id);
         continue;
       }
@@ -297,38 +297,49 @@ class MemoryPlugin {
       if (this.config.smartDedup) {
         const similar = this.db.prepare("SELECT id, content FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT 10").all(AgentId) as { id: string; content: string }[];
         for (const s of similar) {
-          let isDup = false, score = jaccardSimilarity(content, s.content);
+          let isDup = false, score = jaccardSimilarity(safeContent, s.content);
           if (this.config.threshold.useLlmForDedup && this.llmClient && score >= 0.5 && score < 0.98) {
-            const r = await this.llmClient.isDuplicate(content, s.content);
+            const r = await this.llmClient.isDuplicate(safeContent, s.content);
             isDup = r.isDuplicate; score = r.similarity;
           } else if (score >= 0.98) { isDup = true; }
           if (isDup) {
             this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(Date.now(), s.id);
             this.cache.delete(`recall:${AgentId}`);
+            captured++;
             break;
           }
         }
+        if (captured >= maxCapture) break;
         continue;
       }
 
       // 核心判断
-      let isCore = isCoreKeyword(content, this.config.coreKeywords);
-      let keywords = extractKeywords(content);
+      let isCore = isCoreKeyword(safeContent, this.config.coreKeywords);
+      let keywords = extractKeywords(safeContent);
       let importance = isCore ? 1.0 : 0.5;
       if (this.config.threshold.useLlmForCore && this.llmClient && !isCore) {
-        const r = await this.llmClient.isCoreMemory(content);
+        const r = await this.llmClient.isCoreMemory(safeContent);
         isCore = r.isCore; importance = r.confidence;
       }
-      if (this.config.threshold.useLlmForExtract && this.llmClient) keywords = await this.llmClient.extractKeywords(content);
+      if (this.config.threshold.useLlmForExtract && this.llmClient) keywords = await this.llmClient.extractKeywords(safeContent);
 
       const scope = this.config.scopes.enabled ? `${this.config.scopes.defaultScope}:${AgentId}` : 'global';
       const tier = getTier(importance, 1, 0, this.config.tier);
-      const memory = { id: generateId(), agent_id: AgentId, scope, content, type: 'other', tier, layer: isCore ? 'core' : 'general', keywords, importance, access_count: 1, created_at: Date.now(), last_accessed: Date.now(), content_hash: contentHash };
-      this.db.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(memory.id, memory.agent_id, memory.scope, memory.content, memory.type, memory.tier, memory.layer, memory.keywords, memory.importance, memory.access_count, memory.created_at, memory.last_accessed, memory.content_hash);
+      
+      // Smart metadata
+      const metadata = JSON.stringify({
+        memory_category: isCore ? 'fact' : 'other',
+        confidence: importance,
+        source_session: AgentId,
+        l0_abstract: safeContent.substring(0, 100)
+      });
+
+      const memory = { id: generateId(), agent_id: AgentId, scope, content: safeContent, type: 'other', tier, layer: isCore ? 'core' : 'general', keywords, importance, access_count: 1, created_at: Date.now(), last_accessed: Date.now(), content_hash: contentHash, metadata };
+      this.db.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(memory.id, memory.agent_id, memory.scope, memory.content, memory.type, memory.tier, memory.layer, memory.keywords, memory.importance, memory.access_count, memory.created_at, memory.last_accessed, memory.content_hash, memory.metadata);
+      captured++;
     }
   }
 
-  // 三层晋升更新
   private updateTier(memoryId: string): void {
     if (!this.config.tier.enabled || !this.db) return;
     const mem = this.db.prepare('SELECT importance, access_count, created_at FROM memories WHERE id = ?').get(memoryId) as { importance: number; access_count: number; created_at: number };
@@ -339,7 +350,6 @@ class MemoryPlugin {
   }
 
   async recall(AgentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
-    // 自适应检索 (含强制关键词 + CJK阈值)
     if (!shouldRetrieve(query, this.config.adaptiveRetrieval)) return { hasMemory: false, memories: [] };
     const cacheKey = `recall:${AgentId}:${query}`;
     if (this.cache.has(cacheKey)) return this.cache.get(cacheKey)!;
@@ -351,35 +361,19 @@ class MemoryPlugin {
       memories = memories.map(m => {
         const daysOld = (Date.now() - m.last_accessed) / (1000 * 60 * 60 * 24);
         let score = (m.tier === 'core' ? 1.5 : m.tier === 'working' ? 1.0 : 0.5) * m.importance;
-        
-        // Weibull 衰减
         if (this.config.weibullDecay.enabled) {
           score *= weibullDecay(daysOld, this.config.weibullDecay.shape, this.config.weibullDecay.scale);
         } else {
           score *= (0.3 + 0.7 * Math.pow(0.5, daysOld / halfLife));
         }
-        
-        // 访问强化
         score *= reinforcementFactor(m.access_count, this.config.reinforcement);
-        
-        // 长度归一化
-        if (this.config.lengthNorm.enabled) {
-          score *= lengthNorm(m.content, this.config.lengthNorm.anchor);
-        }
-        
+        if (this.config.lengthNorm.enabled) score *= lengthNorm(m.content, this.config.lengthNorm.anchor);
         return { ...m, _score: score };
       }).sort((a, b) => b._score - a._score);
     }
 
-    // MMR 多样性去重
-    if (this.config.mmr.enabled) {
-      memories = mmrDeduplicate(memories, this.config.mmr);
-    }
-
-    // 硬最低分过滤
-    if (this.config.hardMinScore.enabled) {
-      memories = memories.filter(m => (m._score || m.importance) >= this.config.hardMinScore.threshold);
-    }
+    if (this.config.mmr.enabled) memories = mmrDeduplicate(memories, this.config.mmr);
+    if (this.config.hardMinScore.enabled) memories = memories.filter(m => (m._score || m.importance) >= this.config.hardMinScore.threshold);
 
     const limited = memories.slice(0, this.config.maxResults);
     const result = { hasMemory: limited.length > 0, memories: limited };
@@ -405,7 +399,7 @@ class MemoryPlugin {
     this.log.info('[algo-memory] 清理了', result.changes, '条过期记忆');
   }
 
-  // 工具方法
+  // 工具
   listMemories(AgentId: string, limit: number = 20): any[] { return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY tier, importance DESC, created_at DESC LIMIT ?').all(AgentId, limit); }
   searchMemories(AgentId: string, query: string): any[] { const q = `%${query}%`; return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(AgentId, q, q); }
   getStats(AgentId: string): { total: number; core: number; working: number; peripheral: number; general: number } {
@@ -421,7 +415,7 @@ class MemoryPlugin {
   deleteBulk(AgentId: string, memoryIds: string[]): number { const placeholders = memoryIds.map(() => '?').join(','); const r = this.db!.prepare(`DELETE FROM memories WHERE id IN (${placeholders}) AND agent_id = ?`).run(...memoryIds, AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes; }
   clearMemories(AgentId: string, keepCore: boolean = true): number { let r = keepCore ? this.db!.prepare('DELETE FROM memories WHERE agent_id = ? AND tier != "core"').run(AgentId) : this.db!.prepare('DELETE FROM memories WHERE agent_id = ?').run(AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes; }
   updateMemory(AgentId: string, memoryId: string, content: string): boolean { 
-    const safe = content.replace(/</g, '&lt;').replace(/>/g, '&gt;'); 
+    const safe = normalizeText(content).replace(/</g, '&lt;').replace(/>/g, '&gt;'); 
     const isCore = isCoreKeyword(safe, this.config.coreKeywords);
     const tier = getTier(isCore ? 1.0 : 0.5, 1, 0, this.config.tier);
     const r = this.db!.prepare('UPDATE memories SET content = ?, tier = ?, layer = ?, keywords = ?, importance = ?, last_accessed = ? WHERE id = ? AND agent_id = ?').run(safe, tier, isCore ? 'core' : 'general', extractKeywords(safe), isCore ? 1.0 : 0.5, Date.now(), memoryId, AgentId); 
@@ -435,8 +429,8 @@ class MemoryPlugin {
     for (const m of memories) {
       try {
         const tier = getTier(m.importance || 0.5, m.access_count || 1, 0, this.config.tier);
-        this.db!.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-          m.id || generateId(), AgentId, m.scope || 'global', m.content, m.type || 'other', tier, m.layer || 'general', m.keywords || '', m.importance || 0.5, m.access_count || 1, m.created_at || Date.now(), m.last_accessed || Date.now(), m.content_hash || hashContent(m.content)
+        this.db!.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+          m.id || generateId(), AgentId, m.scope || 'global', m.content, m.type || 'other', tier, m.layer || 'general', m.keywords || '', m.importance || 0.5, m.access_count || 1, m.created_at || Date.now(), m.last_accessed || Date.now(), m.content_hash || hashContent(m.content), m.metadata || null
         );
         imported++;
       } catch (e) { /* ignore */ }
@@ -457,7 +451,7 @@ const algoMemoryPlugin = {
     const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
     plugin.init(stateDir);
 
-    // 工具注册 (10个)
+    // 工具 (10个)
     const tools = [
       { name: 'memory_list', desc: '列出记忆', p: { agentId: 'string', limit: 'number' } },
       { name: 'memory_search', desc: '搜索记忆', p: { agentId: 'string', query: 'string' } },
@@ -516,7 +510,7 @@ const algoMemoryPlugin = {
 
     api.onDeactivate(() => plugin.close());
     const cfg = api.pluginConfig || {};
-    log.info(`[algo-memory] 插件注册完成, 工具数: ${tools.length}, 三层晋升: ${cfg.tier?.enabled}, 强化: ${cfg.reinforcement?.enabled}, CJK: 已支持`);
+    log.info(`[algo-memory] 插件注册完成, 工具数: ${tools.length}, 每轮写入: ${cfg.capturePerTurn || 3}条, 三层晋升: ${cfg.tier?.enabled}`);
   }
 };
 
