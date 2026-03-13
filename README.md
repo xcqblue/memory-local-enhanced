@@ -9,15 +9,22 @@
 
 - ✅ Agent 独立记忆 (每个 Agent 有自己的记忆空间)
 - ✅ 6 类分类 (preference/fact/event/entity/case/pattern)
-- ✅ 两层分层 (core/general)
+- ✅ 两层分层 (core 重要记忆 / general 普通记忆)
 - ✅ FTS5 全文搜索
-- ✅ LRU 缓存加速
-- ✅ 哈希去重 (防止重复存储)
+- ✅ LRU 缓存加速 (5分钟 TTL)
+- ✅ 哈希去重 (SHA256)
 - ✅ 噪声过滤 (过滤无效内容)
 - ✅ 异步存储 (不阻塞对话)
-- ✅ 可选 LLM 增强 (MiniMax/OpenAI/Claude/Ollama)
-- ✅ 删除 Agent 时自动清理记忆
-- ✅ 轻量高效 (< 50ms)
+- ✅ 可选 LLM 增强 (MiniMax/OpenAI/Claude/DeepSeek/Ollama)
+- ✅ 删除 Agent 时自动清理记忆和 FTS 索引
+- ✅ 定时自动清理过期记忆 (默认 90 天)
+- ✅ CLI 命令管理
+- ✅ GitHub 在线更新
+- ✅ 本地文件更新
+- ✅ 版本管理 (日期格式 YYYYMMDD)
+- ✅ XSS 安全防护
+
+---
 
 ## 📊 性能
 
@@ -92,12 +99,11 @@
     ▼          ▼
 ┌────────┐  ┌──────────────────┐
 │ LLM    │  │ 规则分类         │
-│ 处理   │  │ 6类: preference/ │
+│ 处理   │  │ 6类: preference/│
 │        │  │ fact/event/      │
 │ •分类  │  │ entity/case/     │
 │ •关键词│  │ pattern          │
-│ •压缩  │  └────────┬─────────┘
-└───┬────┘          │
+└───┬────┘  └────────┬─────────┘
     │               │
     └───────┬───────┘
             │
@@ -110,26 +116,21 @@
          ▼
 ┌──────────────────┐
 │  哈希去重       │
-│  检查重复       │
+│  SHA256 检查     │
 └────────┬─────────┘
          │
     ┌────┴────┐
-    │ 存在?   │
-    │ Yes     │ No
-    ▼         ▼
+    │ 存在?    │
+    │ Yes      │ No
+    ▼          ▼
 ┌────────┐  ┌──────────────────┐
 │更新访问│  │ 写入新记忆      │
-│时间   │  │ • agent_id      │
-└────────┘  │ • content       │
-            │ • type          │
-            │ • keywords      │
-            │ • importance    │
-            └────────┬─────────┘
+│时间+1  │  │ + FTS5 索引     │
+└────────┘  └────────┬─────────┘
                      │
                      ▼
             ┌──────────────────┐
             │ 清理缓存         │
-            │ (相关 key)      │
             └──────────────────┘
 ```
 
@@ -141,7 +142,7 @@
        ▼
 ┌──────────────────┐
 │  检查 Agent ID   │
-│  (防御性)       │
+│  (防御性)        │
 └────────┬─────────┘
          │
          ▼
@@ -155,71 +156,53 @@
     │ Yes     │ No
     ▼         ▼
 ┌────────┐  ┌──────────────────┐
-│直接返回│  │ FTS5 搜索       │
-│        │  │ • agent_id 过滤 │
-└────────┘  │ • 关键词匹配    │
+│直接返回│  │ 搜索            │
+│        │  │ (core 优先)    │
+└────────┘  └────────┬─────────┘
+                     │
+                     ▼
+            ┌──────────────────┐
+            │ 排序             │
+            │ core > general  │
+            │ > importance    │
+            │ > access_count │
             └────────┬─────────┘
                      │
                      ▼
             ┌──────────────────┐
-            │  排序            │
-            │  分数 =          │
-            │  importance *0.5 │
-            │  + access*0.3   │
-            │  + recency*0.2  │
+            │ 限制 Token       │
+            │ < maxContextChars│
             └────────┬─────────┘
                      │
                      ▼
             ┌──────────────────┐
-            │  限制数量        │
-            │  Top N          │
+            │ XSS 转义输出    │
             └────────┬─────────┘
                      │
                      ▼
-            ┌──────────────────┐
-            │  限制 Token      │
-            │  < maxChars     │
-            └────────┬─────────┘
-                     │
-                     ▼
-            ┌──────────────────┐
-            │  格式化输出     │
-            │  Markdown 格式  │
-            └────────┬─────────┘
-                     │
-                     ▼
-            ┌──────────────────┐
-            │  缓存结果       │
-            └────────┬─────────┘
-                     │
-                     ▼
-            返回记忆上下文
+            注入 systemPrompt
 ```
 
-### 3. 删除 Agent 流程
+### 3. 定时清理流程
 
 ```
-删除 Agent 信号
+每天自动执行
        │
        ▼
 ┌──────────────────┐
-│  删除记忆        │
-│  WHERE agent_id  │
-│  = ?            │
+│ 计算过期时间     │
+│ now - cleanupDays│
 └────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
-│  删除 FTS 索引  │
-│  (关联记录)      │
+│ 删除过期 general │
+│ 记忆 + FTS 索引 │
+│ (保留 core)     │
 └────────┬─────────┘
          │
          ▼
-┌──────────────────┐
-│  清理缓存       │
-│  pattern: *:   │
-│  {agentId}:*   │
-└──────────────────┘
+日志输出清理数量
 ```
 
 ---
@@ -232,18 +215,18 @@
 ├──────────────────────────────────────┤
 │   config.llm.provider =              │
 │   ┌─────────┐                        │
-│   │ minimax │ → MiniMax API          │
+│   │ minimax │ → MiniMax API         │
 │   ├─────────┤                        │
-│   │ openai  │ → OpenAI API           │
+│   │ openai  │ → OpenAI API          │
 │   ├─────────┤                        │
-│   │ claude  │ → Anthropic API        │
+│   │ claude  │ → Anthropic API       │
 │   ├─────────┤                        │
-│   │ deepseek│ → DeepSeek API         │
+│   │ deepseek│ → DeepSeek API        │
 │   ├─────────┤                        │
-│   │ ollama  │ → 本地模型              │
+│   │ ollama  │ → 本地模型             │
 │   └─────────┘                        │
 │                                      │
-│   效果 = 模型强度 × 配置              │
+│   效果 = 模型强度 × 配置             │
 └──────────────────────────────────────┘
 ```
 
@@ -273,7 +256,17 @@ CREATE INDEX idx_agent_hash ON memories(agent_id, content_hash);
 CREATE INDEX idx_layer ON memories(agent_id, layer);
 
 -- FTS5 全文索引
-CREATE VIRTUAL TABLE memories_fts USING fts5(content, keywords);
+CREATE VIRTUAL TABLE memories_fts USING fts5(
+    id UNINDEXED,
+    content,
+    keywords
+);
+
+-- 版本管理
+CREATE TABLE memory_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 ```
 
 ---
@@ -301,117 +294,145 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(content, keywords);
 
 ### 配置说明
 
-| 配置 | 默认值 | 说明 |
-|------|--------|------|
-| autoCapture | true | 自动捕获对话中的记忆 |
-| autoRecall | true | 自动召回相关记忆 |
-| maxResults | 5 | 最大召回数量 |
-| maxContextChars | 500 | 上下文最大字符数 |
-| cacheEnabled | true | 启用缓存 |
-| cleanupDays | 90 | 清理天数 |
-
-### LLM 配置
-
-| 配置 | 说明 |
-|------|------|
-| enabled | 是否启用 LLM 增强 |
-| provider | 模型提供商: minimax/openai/claude/deepseek/ollama |
-| thresholdLength | 超过此长度才调用 LLM |
-| apiKey | API 密钥 |
-| model | 模型名称 |
-| baseURL | API 地址 |
-
----
-
-## 🚀 安装
-
-```bash
-# 方式 1: npm
-npm install memory-local-enhanced
-
-# 方式 2: 复制到 plugins 目录
-cp -r memory-local-enhanced ~/.openclaw/plugins/
-```
-
-### OpenClaw 配置
-
-在 `openclaw.json` 中添加:
-
-```json
-{
-  "plugins": {
-    "slots": {
-      "memory": "memory-local-enhanced"
-    },
-    "entries": {
-      "memory-local-enhanced": {
-        "enabled": true,
-        "config": {
-          "autoCapture": true,
-          "autoRecall": true,
-          "maxResults": 5,
-          "maxContextChars": 500
-        }
-      }
-    }
-  }
-}
-```
-
-### 重启 OpenClaw
-
-```bash
-openclaw gateway restart
-```
+| 配置 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `autoCapture` | boolean | true | 自动捕获对话内容 |
+| `autoRecall` | boolean | true | 自动召回记忆 |
+| `maxResults` | number | 5 | 最大召回条数 |
+| `maxContextChars` | number | 500 | 上下文最大字符数 |
+| `cacheEnabled` | boolean | true | 启用 LRU 缓存 |
+| `cleanupDays` | number | 90 | 过期清理天数 |
+| `llm.enabled` | boolean | false | 启用 LLM 增强 |
+| `llm.provider` | string | minimax | LLM 提供商 |
+| `llm.thresholdLength` | number | 100 | 触发 LLM 的最小长度 |
+| `llm.apiKey` | string | - | API 密钥 |
+| `llm.model` | string | - | 模型名称 |
+| `llm.baseURL` | string | - | API 地址 |
 
 ---
 
 ## 🔧 CLI 命令
 
 ```bash
-# 查看记忆列表
-memory list
+# 列出记忆
+memory list -a <agent-id> [-l 20]
 
 # 搜索记忆
-memory search "query"
+memory search -a <agent-id> -q <关键词>
 
 # 查看统计
-memory stats
+memory stats [-a <agent-id>]
 
 # 删除 Agent 及记忆
-memory delete-agent <agent-id>
+memory delete-agent -a <agent-id>
+
+# 清理过期记忆
+memory cleanup
+
+# 检查更新
+memory check-update
+
+# 从 GitHub 更新
+memory update
+
+# 从本地文件更新
+memory update-file -p <path>
+
+# 增加版本后缀 (当天多次更新时)
+memory bump-version
 ```
 
 ---
 
-## ✅ 逻辑冲突检查
+## 📝 API
 
-| 问题 | 解决方案 |
-|------|----------|
-| 缓存不一致 | 写入后 pattern 清理缓存 |
-| FTS 索引不同步 | 删除时同时删除 FTS 记录 |
-| 哈希不准确 | 内容标准化后再哈希 |
-| 并发安全 | SQLite 事务 + 参数化 |
-| Agent 过滤 | 参数化 + 二次校验 |
-| LLM 失败 | 默认规则值保底 |
-| Token 限制 | 准确估算后截断 |
-| 冷启动 | 空记忆时返回空结果 |
+```typescript
+import { MemoryPlugin } from './src/index';
+
+const memory = new MemoryPlugin({
+  autoCapture: true,
+  autoRecall: true,
+  maxResults: 5,
+  maxContextChars: 500,
+  cleanupDays: 90,
+  llm: {
+    enabled: false,
+    provider: 'minimax',
+    apiKey: 'your-api-key',
+    model: 'abab6.5s-chat',
+    baseURL: 'https://api.minimax.chat/v1'
+  }
+});
+
+await memory.init();
+
+// 存储记忆
+await memory.store(agentId, messages);
+
+// 召回记忆
+const result = await memory.recall(agentId, query);
+
+// 手动设置核心记忆
+await memory.setCoreMemory(agentId, content, 'fact');
+
+// 手动升级为核心
+await memory.promoteToCore(agentId, memoryId);
+
+// 标记为核心记忆
+await memory.markAsCore(memoryId);
+
+// 删除 Agent 及记忆
+await memory.deleteAgent(agentId);
+
+// 清理过期记忆
+await memory.cleanupExpired();
+
+// 获取统计
+memory.getStats(agentId);
+
+// 列出记忆
+memory.listMemories(agentId, limit, offset);
+
+// 搜索记忆
+memory.searchMemories(agentId, query, limit);
+
+// 检查更新
+await memory.checkUpdate();
+
+// 从 GitHub 更新
+await memory.updateFromGitHub();
+
+// 从文件更新
+await memory.updateFromFile('/path/to/index.ts');
+
+// 关闭
+memory.close();
+```
 
 ---
 
-## 📝 核心原则
+## 🏷️ 版本管理
+
+- 版本号格式: `YYYYMMDD` (如 `20260313`)
+- 当天多次更新: `20260313a`, `20260313b`...
+- 版本号文件: `VERSION.txt`
+
+---
+
+## 📁 文件结构
 
 ```
-所有操作:
-├── 参数化查询 (防注入)
-├── 事务包装 (防并发)
-├── 缓存清理 (防过期)
-├── 二次校验 (防越权)
-└── 降级处理 (防崩溃)
+memory-local-enhanced/
+├── src/
+│   └── index.ts          # 主源码
+├── VERSION.txt           # 版本号
+├── package.json
+├── tsconfig.json
+└── README.md
 ```
 
 ---
 
-## License
+## 📄 License
 
-MIT
+MIT License

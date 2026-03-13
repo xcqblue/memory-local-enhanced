@@ -285,10 +285,13 @@ export class MemoryPlugin {
       ).run(Date.now(), existing.id);
     } else {
       // 写入新记忆 (使用事务保证一致性)
+      // 转义内容防止 XSS
+      const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      
       const memory: Memory = {
         id: generateId(),
         agent_id: agentId,
-        content,
+        content: safeContent,
         type,
         layer: 'general',
         keywords,
@@ -313,7 +316,7 @@ export class MemoryPlugin {
         
         // 插入 FTS 索引 (使用 memory id 关联)
         this.db.prepare('INSERT INTO memories_fts (id, content, keywords) VALUES (?, ?, ?)')
-          .run(memory.id, content, keywords);
+          .run(memory.id, safeContent, keywords);
       });
       
       transaction();
@@ -405,10 +408,17 @@ export class MemoryPlugin {
         // 校验 type 合法性，如果非法则返回 undefined
         const validTypes = ['preference', 'fact', 'event', 'entity', 'case', 'pattern', 'other'];
         const type = validTypes.includes(result.type) ? result.type : undefined;
-        return {
-          type,
-          keywords: result.keywords ? JSON.stringify(result.keywords.split(',').map((k: string) => k.trim()).filter(Boolean).slice(0, 10)) : undefined
-        };
+        
+        // 处理关键词，支持字符串或数组
+        let keywords: string | undefined;
+        if (result.keywords) {
+          const kwArray = Array.isArray(result.keywords) 
+            ? result.keywords 
+            : result.keywords.split(',');
+          keywords = JSON.stringify(kwArray.map((k: string) => k.trim()).filter(Boolean).slice(0, 10));
+        }
+        
+        return { type, keywords };
       }
     } catch (error) {
       console.error('[Memory] LLM 增强失败:', error);
@@ -521,12 +531,12 @@ export class MemoryPlugin {
     }
   }
 
-  // 删除 Agent 记忆 (修复: 同时删除 FTS 索引)
-  async deleteAgent(agentId: string): Promise<void> {
+  // 删除 Agent 记忆 (同时删除 FTS 索引)
+  async deleteAgent(agentId: string): Promise<number> {
     // 防御检查
     if (!agentId) {
       console.warn('[Memory] 无效 Agent ID');
-      return;
+      return 0;
     }
     
     // 使用事务保证一致性
@@ -541,14 +551,17 @@ export class MemoryPlugin {
       
       // 删除记忆
       this.db.prepare('DELETE FROM memories WHERE agent_id = ?').run(agentId);
+      
+      return rows.length;
     });
     
-    transaction();
+    const deletedCount = transaction();
     
     // 清理缓存
     this.invalidateCache(agentId);
     
-    console.log(`[Memory] 已删除 Agent ${agentId} 的所有记忆`);
+    console.log(`[Memory] 已删除 Agent ${agentId} 的 ${deletedCount} 条记忆`);
+    return deletedCount;
   }
 
   // 清理过期记忆
@@ -777,24 +790,27 @@ export class MemoryPlugin {
     }
   }
 
-  // 检查 GitHub 更新
-  async checkUpdate(): Promise<{ hasUpdate: boolean; latestCommit: string; currentVersion: string }> {
+  // 检查 GitHub 更新 (通过版本号文件)
+  async checkUpdate(): Promise<{ hasUpdate: boolean; latestVersion: string; currentVersion: string }> {
     try {
       const currentVersion = this.getCurrentVersion();
       
-      // 获取最新版本
-      const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/commits/master`);
-      const data = await response.json();
-      const latestCommit = data.sha?.substring(0, 7) || 'unknown';
+      // 获取 GitHub 上的版本号文件
+      const response = await fetch(`${GITHUB_RAW_BASE}/VERSION.txt`);
+      if (!response.ok) {
+        return { hasUpdate: false, latestVersion: 'unknown', currentVersion };
+      }
+      
+      const latestVersion = (await response.text()).trim();
       
       return {
-        hasUpdate: latestCommit !== currentVersion,
-        latestCommit,
+        hasUpdate: latestVersion !== currentVersion,
+        latestVersion,
         currentVersion
       };
     } catch (error) {
       console.error('[Memory] 检查更新失败:', error);
-      return { hasUpdate: false, latestCommit: 'unknown', currentVersion: 'unknown' };
+      return { hasUpdate: false, latestVersion: 'unknown', currentVersion: 'unknown' };
     }
   }
 
@@ -974,7 +990,7 @@ export async function onload(context: any): Promise<void> {
           execute: async () => {
             const result = await memoryPlugin.checkUpdate();
             if (result.hasUpdate) {
-              return { type: 'text', content: `发现新版本: ${result.latestCommit} (当前: ${result.currentVersion})\n使用 memory update 更新` };
+              return { type: 'text', content: `发现新版本: ${result.latestVersion} (当前: ${result.currentVersion})\n使用 memory update 更新` };
             }
             return { type: 'text', content: `当前已是最新版本: ${result.currentVersion}` };
           }
