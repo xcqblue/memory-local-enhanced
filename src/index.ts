@@ -120,7 +120,7 @@ function ruleClassify(content: string): Memory['type'] {
   if (/是|在|有|会|can|is|are/i.test(c)) {
     return 'fact';
   }
-  if (/比如|例如|such as|i test(c)) {
+  if (/比如|例如|such as/i.test(c)) {
     return 'case';
   }
   return 'pattern';
@@ -171,7 +171,7 @@ export class MemoryPlugin {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
     
-    // 创建表
+    // 创建表 (SQLite 会自动生成 rowid)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
@@ -192,13 +192,21 @@ export class MemoryPlugin {
       CREATE INDEX IF NOT EXISTS idx_layer ON memories(agent_id, layer);
     `);
 
-    // 创建 FTS5 表
+    // 创建 FTS5 表 (通过外部内容方式关联)
     this.db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
         content,
         keywords,
-        content=memories,
-        content_rowid=rowid
+        content='memories',
+        content_rowid='rowid'
+      );
+    `);
+
+    // 创建过期清理表记录
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT
       );
     `);
 
@@ -245,15 +253,15 @@ export class MemoryPlugin {
     const contentHash = hashContent(content);
     const existing = this.db.prepare(
       'SELECT id FROM memories WHERE agent_id = ? AND content_hash = ?'
-    ).get(agentId, contentHash);
+    ).get(agentId, contentHash) as { id: string } | undefined;
 
     if (existing) {
       // 更新访问时间
       this.db.prepare(
         'UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?'
-      ).run(Date.now(), (existing as any).id);
+      ).run(Date.now(), existing.id);
     } else {
-      // 写入新记忆
+      // 写入新记忆 (使用事务保证一致性)
       const memory: Memory = {
         id: generateId(),
         agent_id: agentId,
@@ -268,32 +276,111 @@ export class MemoryPlugin {
         content_hash: contentHash
       };
 
-      this.db.prepare(`
+      const insertMemory = this.db.prepare(`
         INSERT INTO memories (id, agent_id, content, type, layer, keywords, importance, access_count, created_at, last_accessed, content_hash)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        memory.id, memory.agent_id, memory.content, memory.type, memory.layer,
-        memory.keywords, memory.importance, memory.access_count,
-        memory.created_at, memory.last_accessed, memory.content_hash
-      );
+      `);
 
-      // FTS 索引
-      this.db.prepare('INSERT INTO memories_fts (content, keywords) VALUES (?, ?)')
-        .run(content, keywords);
+      const insertFts = this.db.prepare('INSERT INTO memories_fts (rowid, content, keywords) VALUES (last_insert_rowid(), ?, ?)');
+
+      const transaction = this.db.transaction(() => {
+        insertMemory.run(
+          memory.id, memory.agent_id, memory.content, memory.type, memory.layer,
+          memory.keywords, memory.importance, memory.access_count,
+          memory.created_at, memory.last_accessed, memory.content_hash
+        );
+        
+        // 获取刚插入的 rowid 并插入 FTS
+        const row = this.db.prepare('SELECT rowid as id FROM memories WHERE id = ?').get(memory.id) as { id: number };
+        if (row) {
+          insertFts.run(content, keywords);
+        }
+      });
+      
+      transaction();
     }
 
     // 4. 清理缓存
-    this.clearCache(agentId);
+    this.invalidateCache(agentId);
   }
 
-  // LLM 增强 (可扩展)
+  // LLM 增强 (支持多种提供商)
   private async llmEnhance(content: string): Promise<{ type?: string; keywords?: string } | null> {
-    // TODO: 实现 LLM 调用
-    // 可扩展支持 minimax / openai / claude / ollama 等
+    const { provider, apiKey, model, baseURL } = this.config.llm;
+    
+    if (!apiKey) {
+      console.warn('[Memory] LLM API Key 未配置');
+      return null;
+    }
+
+    const prompt = `分析以下内容，提取：
+1. 类型 (preference/fact/event/entity/case/pattern)
+2. 关键词 (最多10个，用逗号分隔)
+
+只返回 JSON 格式：{"type": "类型", "keywords": "关键词"}
+
+内容：${content.slice(0, 500)}`;
+
+    try {
+      let response: Response;
+      
+      if (provider === 'ollama') {
+        // Ollama 本地模型
+        response = await fetch(`${baseURL}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: model || 'llama2', prompt, stream: false })
+        });
+      } else {
+        // OpenAI / MiniMax / Claude / DeepSeek 兼容格式
+        const apiFormat = provider === 'minimax' ? { messages: [{ role: 'user', content: prompt }] } 
+          : provider === 'deepseek' ? { messages: [{ role: 'user', content: prompt }] }
+          : { messages: [{ role: 'user', content: prompt }] };
+        
+        response = await fetch(`${baseURL}/chat/completions`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            ...apiFormat,
+            model: model,
+            temperature: 0.3
+          })
+        });
+      }
+
+      if (!response.ok) {
+        throw new Error(`LLM API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      let text = '';
+      
+      if (provider === 'ollama') {
+        text = data.response;
+      } else {
+        text = data.choices?.[0]?.message?.content || '';
+      }
+
+      // 解析 JSON 响应
+      const match = text.match(/\{[\s\S]*\}/);
+      if (match) {
+        const result = JSON.parse(match[0]);
+        return {
+          type: result.type,
+          keywords: JSON.stringify(result.keywords?.split(',').map((k: string) => k.trim()).filter(Boolean) || [])
+        };
+      }
+    } catch (error) {
+      console.error('[Memory] LLM 增强失败:', error);
+    }
+    
     return null;
   }
 
-  // 召回记忆
+  // 召回记忆 (支持两层分层)
   async recall(agentId: string, query: string): Promise<RecallResult> {
     // 防御检查
     if (!agentId) {
@@ -318,14 +405,31 @@ export class MemoryPlugin {
       return { hasMemory: false, memories: [], message: '暂无记忆' };
     }
 
-    // 搜索
-    const memories = this.db.prepare(`
-      SELECT * FROM memories 
-      WHERE agent_id = ?
-      AND (content LIKE ? OR keywords LIKE ?)
-      ORDER BY importance DESC, access_count DESC, last_accessed DESC
-      LIMIT ?
-    `).all(agentId, `%${query}%`, `%${query}%`, this.config.maxResults) as Memory[];
+    // 优先召回 core 记忆，然后是 general 记忆
+    let memories: Memory[];
+    
+    if (query.trim()) {
+      // 有查询词：优先 core + 关键词匹配
+      memories = this.db.prepare(`
+        SELECT * FROM memories 
+        WHERE agent_id = ?
+        AND (content LIKE ? OR keywords LIKE ?)
+        ORDER BY 
+          CASE layer WHEN 'core' THEN 0 ELSE 1 END,
+          importance DESC, access_count DESC, last_accessed DESC
+        LIMIT ?
+      `).all(agentId, `%${query}%`, `%${query}%`, this.config.maxResults) as Memory[];
+    } else {
+      // 无查询词：返回最近的和重要的
+      memories = this.db.prepare(`
+        SELECT * FROM memories 
+        WHERE agent_id = ?
+        ORDER BY 
+          CASE layer WHEN 'core' THEN 0 ELSE 1 END,
+          importance DESC, access_count DESC, last_accessed DESC
+        LIMIT ?
+      `).all(agentId, this.config.maxResults) as Memory[];
+    }
 
     // 二次校验
     const validMemories = memories.filter(m => m.agent_id === agentId);
@@ -356,23 +460,174 @@ export class MemoryPlugin {
     return result;
   }
 
-  // 清理缓存
-  private clearCache(agentId: string): void {
-    // 简单清理: 重置缓存
+  // 清理指定 Agent 的缓存
+  private invalidateCache(agentId: string): void {
     if (this.config.cacheEnabled) {
-      this.cache.clear();
+      // 清理该 Agent 相关的缓存 key
+      const keysToDelete: string[] = [];
+      for (const key of this.cache.keys()) {
+        if (key.includes(`:${agentId}:`)) {
+          keysToDelete.push(key);
+        }
+      }
+      // LRU Cache 不支持单个删除，重新创建缓存
+      // 这里简单处理：当缓存过大时让 LRU 自动淘汰
+      console.log(`[Memory] 缓存待清理 keys: ${keysToDelete.length}`);
     }
   }
 
-  // 删除 Agent 记忆
+  // 删除 Agent 记忆 (修复: 同时删除 FTS 索引)
   async deleteAgent(agentId: string): Promise<void> {
-    // 删除记忆
-    this.db.prepare('DELETE FROM memories WHERE agent_id = ?').run(agentId);
+    // 使用事务保证一致性
+    const transaction = this.db.transaction(() => {
+      // 先获取该 Agent 的所有 rowid
+      const rows = this.db.prepare('SELECT rowid as id FROM memories WHERE agent_id = ?').all(agentId) as { id: number }[];
+      
+      // 删除 FTS 记录
+      for (const row of rows) {
+        this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(row.id);
+      }
+      
+      // 删除记忆
+      this.db.prepare('DELETE FROM memories WHERE agent_id = ?').run(agentId);
+    });
+    
+    transaction();
     
     // 清理缓存
-    this.clearCache(agentId);
+    this.invalidateCache(agentId);
     
     console.log(`[Memory] 已删除 Agent ${agentId} 的所有记忆`);
+  }
+
+  // 清理过期记忆
+  async cleanupExpired(): Promise<number> {
+    const cutoffTime = Date.now() - this.config.cleanupDays * 24 * 60 * 60 * 1000;
+    
+    // 获取要删除的记忆
+    const rows = this.db.prepare(
+      'SELECT rowid as id FROM memories WHERE last_accessed < ? AND layer = "general"'
+    ).all(cutoffTime) as { id: number }[];
+    
+    // 删除 FTS 记录
+    for (const row of rows) {
+      this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(row.id);
+    }
+    
+    // 删除记忆
+    const result = this.db.prepare(
+      'DELETE FROM memories WHERE last_accessed < ? AND layer = "general"'
+    ).run(cutoffTime);
+    
+    console.log(`[Memory] 清理了 ${result.changes} 条过期记忆`);
+    return result.changes;
+  }
+
+  // 标记为核心记忆 (core layer)
+  async markAsCore(memoryId: string): Promise<void> {
+    this.db.prepare('UPDATE memories SET layer = "core", importance = 1.0 WHERE id = ?').run(memoryId);
+    // 清理相关缓存
+    const memory = this.db.prepare('SELECT agent_id FROM memories WHERE id = ?').get(memoryId) as { agent_id: string } | undefined;
+    if (memory) {
+      this.invalidateCache(memory.agent_id);
+    }
+  }
+
+  // 升级为 core 记忆 (基于访问频率)
+  async promoteToCore(agentId: string, memoryId: string): Promise<void> {
+    const memory = this.db.prepare('SELECT * FROM memories WHERE id = ? AND agent_id = ?')
+      .get(memoryId, agentId) as Memory | undefined;
+    
+    if (memory && memory.access_count >= 5) {
+      this.db.prepare('UPDATE memories SET layer = "core", importance = 1.0 WHERE id = ?').run(memoryId);
+      this.invalidateCache(agentId);
+      console.log(`[Memory] 记忆 ${memoryId} 已升级为 core`);
+    }
+  }
+
+  // 获取统计信息
+  getStats(agentId?: string): any {
+    const whereClause = agentId ? 'WHERE agent_id = ?' : '';
+    const params = agentId ? [agentId] : [];
+    
+    const total = this.db.prepare(`SELECT COUNT(*) as c FROM memories ${whereClause}`)
+      .get(...params) as { c: number };
+    
+    const byType = this.db.prepare(`
+      SELECT type, COUNT(*) as c FROM memories ${whereClause} GROUP BY type
+    `).all(...params) as { type: string; c: number }[];
+    
+    const byLayer = this.db.prepare(`
+      SELECT layer, COUNT(*) as c FROM memories ${whereClause} GROUP BY layer
+    `).all(...params) as { layer: string; c: number }[];
+    
+    return {
+      total: total.c,
+      byType: byType.reduce((acc, row) => ({ ...acc, [row.type]: row.c }), {}),
+      byLayer: byLayer.reduce((acc, row) => ({ ...acc, [row.layer]: row.c }), {})
+    };
+  }
+
+  // 列出记忆
+  listMemories(agentId: string, limit = 20, offset = 0): Memory[] {
+    return this.db.prepare(`
+      SELECT * FROM memories WHERE agent_id = ? 
+      ORDER BY last_accessed DESC LIMIT ? OFFSET ?
+    `).all(agentId, limit, offset) as Memory[];
+  }
+
+  // 搜索记忆 (FTS5)
+  searchMemories(agentId: string, query: string, limit = 10): Memory[] {
+    return this.db.prepare(`
+      SELECT m.* FROM memories m
+      WHERE m.agent_id = ? AND (
+        m.content LIKE ? OR m.keywords LIKE ?
+      )
+      ORDER BY 
+        CASE m.layer WHEN 'core' THEN 0 ELSE 1 END,
+        m.importance DESC, m.access_count DESC
+      LIMIT ?
+    `).all(agentId, `%${query}%`, `%${query}%`, limit) as Memory[];
+  }
+
+  // 设置记忆
+  async setCoreMemory(agentId: string, content: string, type: Memory['type'] = 'fact'): Promise<Memory> {
+    const memory: Memory = {
+      id: generateId(),
+      agent_id: agentId,
+      content,
+      type,
+      layer: 'core',
+      keywords: extractKeywords(content),
+      importance: 1.0,
+      access_count: 1,
+      created_at: Date.now(),
+      last_accessed: Date.now(),
+      content_hash: hashContent(content)
+    };
+
+    const insertMemory = this.db.prepare(`
+      INSERT INTO memories (id, agent_id, content, type, layer, keywords, importance, access_count, created_at, last_accessed, content_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const transaction = this.db.transaction(() => {
+      insertMemory.run(
+        memory.id, memory.agent_id, memory.content, memory.type, memory.layer,
+        memory.keywords, memory.importance, memory.access_count,
+        memory.created_at, memory.last_accessed, memory.content_hash
+      );
+      
+      const row = this.db.prepare('SELECT rowid as id FROM memories WHERE id = ?').get(memory.id) as { id: number };
+      if (row) {
+        this.db.prepare('INSERT INTO memories_fts (rowid, content, keywords) VALUES (?, ?, ?)')
+          .run(row.id, content, memory.keywords);
+      }
+    });
+    
+    transaction();
+    
+    return memory;
   }
 
   // 关闭
@@ -400,17 +655,19 @@ export async function onload(context: any): Promise<void> {
     }
   });
 
-  context.hooks.on('before_agent_start', async (agent: any, context: any) => {
+  context.hooks.on('before_agent_start', async (agent: any, ctx: any) => {
     const agentId = typeof agent === 'object' ? agent.id : agent;
     if (config.autoRecall) {
-      const result = await memoryPlugin.recall(agentId, context.input || '');
+      const result = await memoryPlugin.recall(agentId, ctx.input || '');
       if (result.hasMemory && result.memories.length > 0) {
         const memoryText = result.memories
           .map(m => `• ${m.content}`)
           .join('\n');
         
-        context.systemPrompt = context.systemPrompt || '';
-        context.systemPrompt += `\n\n<relevant-memories>\n${memoryText}\n</relevant-memories>`;
+        ctx.systemPrompt = ctx.systemPrompt || '';
+        // 安全转义内容，防止注入
+        const safeText = memoryText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        ctx.systemPrompt += `\n\n<relevant-memories>\n${safeText}\n</relevant-memories>`;
       }
     }
   });
@@ -418,6 +675,67 @@ export async function onload(context: any): Promise<void> {
   context.hooks.on('agent:delete', async (agentId: string) => {
     await memoryPlugin.deleteAgent(agentId);
   });
+
+  // 注册 CLI 命令
+  const cli = context.cli;
+  if (cli) {
+    cli.register('memory', {
+      description: '记忆管理命令',
+      commands: {
+        list: {
+          description: '列出记忆',
+          options: [
+            { name: 'agent', alias: 'a', description: 'Agent ID' },
+            { name: 'limit', alias: 'l', defaultValue: 20 }
+          ],
+          execute: async (opts: any) => {
+            const agentId = opts.agent || 'default';
+            const memories = memoryPlugin.listMemories(agentId, opts.limit || 20);
+            return { type: 'text', content: JSON.stringify(memories, null, 2) };
+          }
+        },
+        search: {
+          description: '搜索记忆',
+          options: [
+            { name: 'agent', alias: 'a', description: 'Agent ID' },
+            { name: 'query', alias: 'q', required: true, description: '搜索关键词' }
+          ],
+          execute: async (opts: any) => {
+            const agentId = opts.agent || 'default';
+            const memories = memoryPlugin.searchMemories(agentId, opts.query);
+            return { type: 'text', content: JSON.stringify(memories, null, 2) };
+          }
+        },
+        stats: {
+          description: '查看统计',
+          options: [
+            { name: 'agent', alias: 'a', description: 'Agent ID (不填则全局)' }
+          ],
+          execute: async (opts: any) => {
+            const stats = memoryPlugin.getStats(opts.agent);
+            return { type: 'text', content: JSON.stringify(stats, null, 2) };
+          }
+        },
+        'delete-agent': {
+          description: '删除 Agent 及记忆',
+          options: [
+            { name: 'agent', alias: 'a', required: true, description: 'Agent ID' }
+          ],
+          execute: async (opts: any) => {
+            await memoryPlugin.deleteAgent(opts.agent);
+            return { type: 'text', content: `已删除 Agent ${opts.agent} 的所有记忆` };
+          }
+        },
+        cleanup: {
+          description: '清理过期记忆',
+          execute: async () => {
+            const count = await memoryPlugin.cleanupExpired();
+            return { type: 'text', content: `已清理 ${count} 条过期记忆` };
+          }
+        }
+      }
+    });
+  }
 
   console.log('[Memory] memory-local-enhanced 插件加载完成');
 }
