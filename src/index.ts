@@ -490,26 +490,28 @@ const algoMemoryPlugin = {
       });
     });
 
+    // 获取用户配置
+    const cfg = api.pluginConfig || {};
+
     // 钩子
     api.on('agent_end', async (e: any, ctx: any) => {
       const sessionKey = ctx.sessionKey || 'default';
       const messages = ctx.messages || [];
-      if (DEFAULT_CONFIG.autoCapture && messages.length > 0) await plugin.store(sessionKey, messages);
+      if (cfg.autoCapture && messages.length > 0) await plugin.store(sessionKey, messages);
     });
 
     api.onConversationTurn(async (messages: any[], sessionKey: string, _owner: string) => {
       const agentId = sessionKey || 'default';
-      if (DEFAULT_CONFIG.autoCapture) await plugin.store(agentId, messages);
-      if (DEFAULT_CONFIG.autoRecall) {
+      if (cfg.autoCapture) await plugin.store(agentId, messages);
+      if (cfg.autoRecall) {
         const userMsg = messages.find((m: any) => m.role === 'user');
-        if (userMsg && shouldRetrieve(userMsg.content || '', DEFAULT_CONFIG.adaptiveRetrieval)) {
+        if (userMsg && shouldRetrieve(userMsg.content || '', cfg.adaptiveRetrieval || DEFAULT_CONFIG.adaptiveRetrieval)) {
           await plugin.recall(agentId, userMsg.content || '');
         }
       }
     });
 
     api.onDeactivate(() => plugin.close());
-    const cfg = api.pluginConfig || {};
     log.info(`[algo-memory] 插件注册完成, 工具数: ${tools.length}, 每轮写入: ${cfg.capturePerTurn || 3}条, 三层晋升: ${cfg.tier?.enabled}`);
   }
 };
