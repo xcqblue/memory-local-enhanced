@@ -451,7 +451,7 @@ const algoMemoryPlugin = {
     const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
     plugin.init(stateDir);
 
-    // 工具 (10个)
+    // 工具 (11个)
     const tools = [
       { name: 'algo_memory_list', desc: '列出记忆', p: { agentId: 'string', limit: 'number' } },
       { name: 'algo_memory_search', desc: '搜索记忆', p: { agentId: 'string', query: 'string' } },
