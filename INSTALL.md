@@ -1,36 +1,44 @@
 # algo-memory 安装指南
 
----
-
 ## 环境要求
 
-- Node.js 18+
-- OpenClaw
-- npm 或 yarn
+| 项目 | 要求 |
+|------|------|
+| OpenClaw | 2.0.0+ |
+| Node.js | 18+ |
+| 操作系统 | Linux / macOS / Windows (WSL) |
 
----
+## ⚠️ 重要：必须按顺序执行
 
-## 安装步骤
-
-### 1. 安装依赖
-
-```bash
-cd ~/.openclaw
-npm install better-sqlite3 lru-cache
-```
-
-### 2. 复制插件
+### 步骤 1: 克隆仓库
 
 ```bash
-# 方式一：从 GitHub 克隆
 cd ~/.openclaw/plugins
 git clone https://github.com/xcqblue/algo-memory.git
-
-# 方式二：手动复制
-# 将下载的插件文件夹复制到 ~/.openclaw/plugins/
+cd algo-memory
 ```
 
-### 3. 配置 OpenClaw
+### 步骤 2: 安装依赖 (关键!)
+
+```bash
+npm install
+```
+
+**⚠️ 这一步必须执行，否则：**
+- 会报错 "node_modules not found"
+- 会报错 "better-sqlite3 bindings not found"
+
+### 步骤 3: 重新编译原生模块 (关键!)
+
+```bash
+npm rebuild better-sqlite3
+```
+
+**⚠️ 这一步必须执行，否则：**
+- 会报错 "Cannot find module 'better-sqlite3'"
+- 会报错 "native bindings not found"
+
+### 步骤 4: 配置 OpenClaw
 
 编辑 `~/.openclaw/openclaw.json`:
 
@@ -38,16 +46,18 @@ git clone https://github.com/xcqblue/algo-memory.git
 {
   "plugins": {
     "allow": ["algo-memory"],
+    "slots": {
+      "memory": "algo-memory"
+    },
     "entries": {
       "algo-memory": {
         "enabled": true,
         "config": {
           "autoCapture": true,
           "autoRecall": true,
-          "recencyDecay": true,
-          "recencyHalfLife": 90,
-          "smartDedup": true,
-          "cleanupDays": 90
+          "maxResults": 5,
+          "cleanupDays": 180,
+          "recencyDecay": true
         }
       }
     }
@@ -55,71 +65,70 @@ git clone https://github.com/xcqblue/algo-memory.git
 }
 ```
 
-### 4. 重启 OpenClaw
-
-重启服务使插件生效。
-
----
-
-## 配置说明
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|---------|------|
-| autoCapture | boolean | true | 自动存储对话 |
-| autoRecall | boolean | true | 自动召回记忆 |
-| recencyDecay | boolean | true | 启用时间衰减 |
-| recencyHalfLife | number | 90 | 半衰期(天) |
-| smartDedup | boolean | true | 启用智能去重 |
-| cleanupDays | number | 90 | 过期清理天数 |
-| cacheEnabled | boolean | true | 启用缓存 |
-| publicMemory | boolean | false | 公共记忆 |
-| llm.enabled | boolean | false | LLM 增强 |
-
----
-
-## CLI 命令
+### 步骤 5: 重启 Gateway
 
 ```bash
-# 列出记忆
-memory list -a <agent-id>
-
-# 搜索记忆
-memory search -a <agent-id> -q <关键词>
-
-# 查看统计
-memory stats
-
-# 清理过期
-memory cleanup
-
-# 检查更新
-memory check-update
+openclaw gateway restart
 ```
 
 ---
 
-## 卸载
+## 完整安装命令
 
 ```bash
-# 1. 从配置中移除
-# 编辑 openclaw.json，删除 plugins 配置
+# 1. 克隆
+cd ~/.openclaw/plugins
+git clone https://github.com/xcqblue/algo-memory.git
+cd algo-memory
 
-# 2. 删除插件文件夹
-rm -rf ~/.openclaw/plugins/algo-memory
+# 2. 安装依赖 (必须!)
+npm install
 
-# 3. (可选) 删除数据
-rm -rf ~/.openclaw/memory-enhanced
+# 3. 重新编译 (必须!)
+npm rebuild better-sqlite3
+
+# 4. 配置
+# 编辑 ~/.openclaw/openclaw.json 添加配置
+
+# 5. 重启
+openclaw gateway restart
+```
+
+---
+
+## 故障排查
+
+### 错误1: node_modules not found
+
+```bash
+npm install
+```
+
+### 错误2: better-sqlite3 bindings not found
+
+```bash
+npm rebuild better-sqlite3
+```
+
+### 错误3: 插件崩溃
+
+确保使用最新版本:
+```bash
+git pull origin main
+npm install
+npm rebuild better-sqlite3
+openclaw gateway restart
 ```
 
 ---
 
 ## 常见问题
 
-### Q: 依赖安装失败？
-A: 确保 Node.js 版本 >= 18，可以运行 `node -v` 检查。
+### Q: 需要 Node.js 吗？
+A: 是的，需要 Node.js 18+
 
-### Q: 插件不生效？
-A: 检查 openclaw.json 格式是否正确，确保插件名称与文件夹名一致。
+### Q: 需要 API Key 吗？
+A: 不需要，完全本地运行
 
-### Q: 如何查看记忆？
-A: 使用 CLI 命令 `memory list -a <agent-id>` 或直接查看数据库 `.openclaw/memory-enhanced/memories.db`。
+### Q: 与 Memos 冲突吗？
+A: 是的，slots.memory 只能选一个
