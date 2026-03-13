@@ -111,8 +111,8 @@ class MemoryPlugin {
     this.cleanupInterval = setInterval(() => this.cleanup(), 24 * 60 * 60 * 1000);
   }
 
-  async store(agentId: string, messages: any[]): Promise<void> {
-    if (!agentId || !messages?.length || !this.db) return;
+  async store(AgentId: string, messages: any[]): Promise<void> {
+    if (!AgentId || !messages?.length || !this.db) return;
 
     for (const msg of messages) {
       if (msg.role !== 'user' || isNoise(msg.content)) continue;
@@ -122,19 +122,19 @@ class MemoryPlugin {
 
       const existing = this.db.prepare(
         'SELECT id FROM memories WHERE agent_id = ? AND content_hash = ?'
-      ).get(agentId, contentHash) as { id: string } | undefined;
+      ).get(AgentId, contentHash) as { id: string } | undefined;
 
       if (existing) {
         this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?')
           .run(Date.now(), existing.id);
-        this.cache.delete(`recall:${agentId}`);
+        this.cache.delete(`recall:${AgentId}`);
         continue;
       }
 
       const isCore = isCoreKeyword(content, this.config.coreKeywords);
       const memory = {
         id: generateId(),
-        agent_id: agentId,
+        agent_id: AgentId,
         content,
         type: 'other',
         layer: isCore ? 'core' : 'general',
@@ -157,13 +157,13 @@ class MemoryPlugin {
     }
   }
 
-  async recall(agentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
-    const cacheKey = `recall:${agentId}:${query}`;
+  async recall(AgentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
+    const cacheKey = `recall:${AgentId}:${query}`;
     if (this.cache.has(cacheKey)) return this.cache.get(cacheKey)!;
 
     let memories = this.db!.prepare(
       "SELECT * FROM memories WHERE agent_id = ? ORDER BY CASE layer WHEN 'core' THEN 0 ELSE 1 END, importance DESC, access_count DESC LIMIT ?"
-    ).all(agentId, this.config.maxResults * 2) as any[];
+    ).all(AgentId, this.config.maxResults * 2) as any[];
 
     if (this.config.recencyDecay) {
       const halfLife = this.config.recencyHalfLife || 180;
@@ -187,19 +187,19 @@ class MemoryPlugin {
     this.log.info('[algo-memory] 清理了', result.changes, '条过期记忆');
   }
 
-  listMemories(agentId: string, limit: number = 20): any[] {
-    return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?').all(agentId, limit);
+  listMemories(AgentId: string, limit: number = 20): any[] {
+    return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?').all(AgentId, limit);
   }
 
-  searchMemories(agentId: string, query: string): any[] {
+  searchMemories(AgentId: string, query: string): any[] {
     const q = `%${query}%`;
-    return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(agentId, q, q);
+    return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(AgentId, q, q);
   }
 
-  getStats(agentId: string): { total: number; core: number; general: number } {
-    const total = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ?').get(agentId) as { count: number };
-    const core = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ? AND layer = "core"').get(agentId) as { count: number };
-    const general = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ? AND layer = "general"').get(agentId) as { count: number };
+  getStats(AgentId: string): { total: number; core: number; general: number } {
+    const total = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ?').get(AgentId) as { count: number };
+    const core = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ? AND layer = "core"').get(AgentId) as { count: number };
+    const general = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ? AND layer = "general"').get(AgentId) as { count: number };
     return { total: total.count, core: core.count, general: general.count };
   }
 
@@ -210,100 +210,109 @@ class MemoryPlugin {
   }
 }
 
-// ============= 插件导出 (官方格式) =============
-export default function (api: any) {
-  const log = api.logger || console;
-  const plugin = new MemoryPlugin(api.pluginConfig || {}, log);
+// ============= 插件定义 (官方格式) =============
+const algoMemoryPlugin = {
+  id: 'algo-memory',
+  name: 'algo-memory',
+  description: '纯算法长期记忆插件 - 0 API / 可选 LLM 增强',
+  kind: 'memory' as const,
 
-  const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
-  plugin.init(stateDir);
+  register(api: any) {
+    const log = api.logger || console;
+    const plugin = new MemoryPlugin(api.pluginConfig || {}, log);
 
-  // 注册工具 - memory_list
-  api.registerTool({
-    name: 'memory_list',
-    label: 'Memory List',
-    description: '列出某Agent的记忆',
-    parameters: {
-      type: 'object',
-      properties: {
-        agentId: { type: 'string', description: 'Agent ID' },
-        limit: { type: 'number', description: '返回数量限制' }
+    const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
+    plugin.init(stateDir);
+
+    // 注册工具 - memory_list
+    api.registerTool({
+      name: 'memory_list',
+      label: 'Memory List',
+      description: '列出某Agent的记忆',
+      parameters: {
+        type: 'object',
+        properties: {
+          agentId: { type: 'string', description: 'Agent ID' },
+          limit: { type: 'number', description: '返回数量限制' }
+        },
+        required: ['agentId']
       },
-      required: ['agentId']
-    },
-    async execute(_toolCallId: string, params: any) {
-      try {
-        const { agentId, limit = 20 } = params;
-        const memories = plugin.listMemories(agentId, limit);
-        return { content: [{ type: 'text', text: JSON.stringify(memories) }] };
-      } catch (err: any) {
-        return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+      async execute(_toolCallId: string, params: any) {
+        try {
+          const { agentId, limit = 20 } = params;
+          const memories = plugin.listMemories(agentId, limit);
+          return { content: [{ type: 'text', text: JSON.stringify(memories) }] };
+        } catch (err: any) {
+          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+        }
       }
-    }
-  });
+    });
 
-  // 注册工具 - memory_search
-  api.registerTool({
-    name: 'memory_search',
-    label: 'Memory Search',
-    description: '搜索记忆',
-    parameters: {
-      type: 'object',
-      properties: {
-        agentId: { type: 'string', description: 'Agent ID' },
-        query: { type: 'string', description: '搜索关键词' }
+    // 注册工具 - memory_search
+    api.registerTool({
+      name: 'memory_search',
+      label: 'Memory Search',
+      description: '搜索记忆',
+      parameters: {
+        type: 'object',
+        properties: {
+          agentId: { type: 'string', description: 'Agent ID' },
+          query: { type: 'string', description: '搜索关键词' }
+        },
+        required: ['agentId', 'query']
       },
-      required: ['agentId', 'query']
-    },
-    async execute(_toolCallId: string, params: any) {
-      try {
-        const { agentId, query } = params;
-        const memories = plugin.searchMemories(agentId, query);
-        return { content: [{ type: 'text', text: JSON.stringify(memories) }] };
-      } catch (err: any) {
-        return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+      async execute(_toolCallId: string, params: any) {
+        try {
+          const { agentId, query } = params;
+          const memories = plugin.searchMemories(agentId, query);
+          return { content: [{ type: 'text', text: JSON.stringify(memories) }] };
+        } catch (err: any) {
+          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+        }
       }
-    }
-  });
+    });
 
-  // 注册工具 - memory_stats
-  api.registerTool({
-    name: 'memory_stats',
-    label: 'Memory Stats',
-    description: '查看记忆统计',
-    parameters: {
-      type: 'object',
-      properties: {
-        agentId: { type: 'string', description: 'Agent ID' }
+    // 注册工具 - memory_stats
+    api.registerTool({
+      name: 'memory_stats',
+      label: 'Memory Stats',
+      description: '查看记忆统计',
+      parameters: {
+        type: 'object',
+        properties: {
+          agentId: { type: 'string', description: 'Agent ID' }
+        },
+        required: ['agentId']
       },
-      required: ['agentId']
-    },
-    async execute(_toolCallId: string, params: any) {
-      try {
-        const { agentId } = params;
-        const stats = plugin.getStats(agentId);
-        return { content: [{ type: 'text', text: JSON.stringify(stats) }] };
-      } catch (err: any) {
-        return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+      async execute(_toolCallId: string, params: any) {
+        try {
+          const { agentId } = params;
+          const stats = plugin.getStats(agentId);
+          return { content: [{ type: 'text', text: JSON.stringify(stats) }] };
+        } catch (err: any) {
+          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+        }
       }
-    }
-  });
+    });
 
-  // 对话钩子
-  api.onConversationTurn(async (messages: any[], sessionKey: string, owner: string) => {
-    const agentId = sessionKey || 'default';
-    if (DEFAULT_CONFIG.autoCapture) await plugin.store(agentId, messages);
-    if (DEFAULT_CONFIG.autoRecall) {
-      const userMsg = messages.find((m: any) => m.role === 'user');
-      if (userMsg) {
-        const result = await plugin.recall(agentId, userMsg.content || '');
-        if (result.hasMemory) { /* 注入上下文 */ }
+    // 对话钩子
+    api.onConversationTurn(async (messages: any[], sessionKey: string, owner: string) => {
+      const agentId = sessionKey || 'default';
+      if (DEFAULT_CONFIG.autoCapture) await plugin.store(agentId, messages);
+      if (DEFAULT_CONFIG.autoRecall) {
+        const userMsg = messages.find((m: any) => m.role === 'user');
+        if (userMsg) {
+          const result = await plugin.recall(agentId, userMsg.content || '');
+          if (result.hasMemory) { /* 注入上下文 */ }
+        }
       }
-    }
-  });
+    });
 
-  // 关闭钩子
-  api.onDeactivate(() => plugin.close());
+    // 关闭钩子
+    api.onDeactivate(() => plugin.close());
 
-  log.info('[algo-memory] 插件注册完成');
-}
+    log.info('[algo-memory] 插件注册完成');
+  }
+};
+
+export default algoMemoryPlugin;

@@ -6,6 +6,7 @@
   "kind": "memory",
   "configSchema": {
     "type": "object",
+    "additionalProperties": false,
     "properties": {
       "autoCapture": {
         "type": "boolean",
@@ -36,6 +37,12 @@
         "type": "number",
         "default": 180,
         "description": "记忆半衰期(天)"
+      },
+      "coreKeywords": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["记住", "牢记", "重要", "remember", "important"],
+        "description": "自动识别为核心记忆的关键词"
       }
     }
   }
