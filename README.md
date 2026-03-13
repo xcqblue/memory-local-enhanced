@@ -28,18 +28,24 @@
 
 ## 🚀 快速开始
 
-### 安装
+### 1. 安装依赖
 
 ```bash
-# 复制到 OpenClaw 插件目录
-cp -r memory-local-enhanced ~/.openclaw/plugins/
-
-# 安装依赖
 cd ~/.openclaw
 npm install better-sqlite3 lru-cache
 ```
 
-### 配置
+### 2. 复制插件
+
+```bash
+# 方式一：从 GitHub 克隆
+cd ~/.openclaw/plugins
+git clone https://github.com/xcqblue/memory-local-enhanced.git
+
+# 方式二：手动下载复制
+```
+
+### 3. 配置
 
 编辑 `~/.openclaw/openclaw.json`:
 
@@ -64,8 +70,29 @@ npm install better-sqlite3 lru-cache
 }
 ```
 
+### 4. 重启 OpenClaw
+
+重启服务使插件生效。
+
+### 5. 使用 CLI
+
+```bash
+# 列出记忆
+memory list -a <agent-id>
+
+# 搜索记忆
+memory search -a <agent-id> -q <关键词>
+
+# 查看统计
+memory stats
+
+# 清理过期
+memory cleanup
+```
+
 ## 📖 文档
 
+- [安装指南](INSTALL.md) - 详细安装步骤
 - [架构设计](ARCHITECTURE.md) - 核心流程、LLM模型、数据表结构
 - [配置与API](CONFIG.md) - 完整配置、CLI命令、API参考
 
