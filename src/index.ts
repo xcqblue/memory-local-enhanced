@@ -224,6 +224,11 @@ export class MemoryPlugin {
 
   // 存储记忆
   async store(agentId: string, messages: { role: string; content: string }[]): Promise<void> {
+    // 防御检查
+    if (!agentId || !messages || !messages.length) {
+      return;
+    }
+    
     // 异步处理，不阻塞
     setImmediate(async () => {
       try {
@@ -275,6 +280,9 @@ export class MemoryPlugin {
       this.db.prepare(
         'UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?'
       ).run(Date.now(), existing.id);
+      
+      // 检查是否需要升级为 core
+      this.promoteToCore(agentId, existing.id);
     } else {
       // 写入新记忆 (使用事务保证一致性)
       const memory: Memory = {
@@ -370,7 +378,8 @@ export class MemoryPlugin {
       response = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000) // 10秒超时
       });
 
       if (!response.ok) {
@@ -517,6 +526,12 @@ export class MemoryPlugin {
 
   // 删除 Agent 记忆 (修复: 同时删除 FTS 索引)
   async deleteAgent(agentId: string): Promise<void> {
+    // 防御检查
+    if (!agentId) {
+      console.warn('[Memory] 无效 Agent ID');
+      return;
+    }
+    
     // 使用事务保证一致性
     const transaction = this.db.transaction(() => {
       // 先获取该 Agent 的所有 id
@@ -585,7 +600,7 @@ export class MemoryPlugin {
   }
 
   // 获取统计信息
-  getStats(agentId?: string): any {
+  getStats(agentId?: string): { total: number; byType: Record<string, number>; byLayer: Record<string, number> } {
     const whereClause = agentId ? 'WHERE agent_id = ?' : '';
     const params = agentId ? [agentId] : [];
     
