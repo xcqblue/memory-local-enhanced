@@ -232,12 +232,18 @@ export class MemoryPlugin {
   private db!: Database.Database;
   private config: Config;
   private cache: LRUCache<string, Memory[]>;
+  private dataPath: string;
   private dbPath: string;
   private cleanupTimer: NodeJS.Timeout | null = null;
 
   constructor(config: Partial<Config> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
-    this.dbPath = path.join(process.cwd(), '.openclaw', 'memory-enhanced', 'memories.db');
+    // 数据目录: ~/.openclaw/workspace/algo-memory/
+    this.dataPath = path.join(process.env.HOME || process.env.USERPROFILE || '/home/x', '.openclaw', 'workspace', 'algo-memory');
+    if (!fs.existsSync(this.dataPath)) {
+      fs.mkdirSync(this.dataPath, { recursive: true });
+    }
+    this.dbPath = path.join(this.dataPath, 'memories.db');
     this.cache = new LRUCache({
       max: 100,
       ttl: 5 * 60 * 1000 // 5分钟
@@ -623,7 +629,7 @@ export class MemoryPlugin {
 
   // 从 OpenClaw 内置记忆导入
   async importFromOpenClaw(agentId?: string): Promise<{ stored: number; skipped: number; merged: number; errors: number }> {
-    const openclawPath = path.join(process.cwd(), '.openclaw', 'agents');
+    const openclawPath = path.join(process.env.HOME || process.env.USERPROFILE || '/home/x', '.openclaw', 'agents');
     const stats = { stored: 0, skipped: 0, merged: 0, errors: 0 };
     
     if (!fs.existsSync(openclawPath)) {
@@ -1047,7 +1053,7 @@ export class MemoryPlugin {
     const baseVersion = `${year}${month}${day}`;
     
     // 检查是否有当天多次更新的后缀文件
-    const versionFile = path.join(process.cwd(), '.openclaw', 'memory-enhanced', 'version.json');
+    const versionFile = path.join(this.dataPath, 'version.json');
     try {
       if (fs.existsSync(versionFile)) {
         const versionData = JSON.parse(fs.readFileSync(versionFile, 'utf8'));
@@ -1070,7 +1076,7 @@ export class MemoryPlugin {
     const day = String(now.getDate()).padStart(2, '0');
     const baseVersion = `${year}${month}${day}`;
     
-    const versionFile = path.join(process.cwd(), '.openclaw', 'memory-enhanced', 'version.json');
+    const versionFile = path.join(this.dataPath, 'version.json');
     const dir = path.dirname(versionFile);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -1087,7 +1093,7 @@ export class MemoryPlugin {
 
   // 增加版本后缀 (当天多次更新时)
   bumpVersion(): void {
-    const versionFile = path.join(process.cwd(), '.openclaw', 'memory-enhanced', 'version.json');
+    const versionFile = path.join(this.dataPath, 'version.json');
     try {
       if (fs.existsSync(versionFile)) {
         const versionData = JSON.parse(fs.readFileSync(versionFile, 'utf8'));
