@@ -183,30 +183,30 @@ function getTier(importance: number, accessCount: number, daysOld: number, confi
 
 // LLM 客户端
 class LLMClient {
-  private config: Config['llm'];
+  private config: Config;
   private log: any;
-  constructor(config: Config['llm'], log: any) { this.config = config; this.log = log; }
+  constructor(config: Config, log: any) { this.config = config; this.log = log; }
   async isCoreMemory(content: string): Promise<{ isCore: boolean; confidence: number }> {
     const localResult = isCoreKeyword(content, this.config.coreKeywords);
     if (localResult) return { isCore: true, confidence: 1.0 };
-    if (!this.config.enabled) return { isCore: false, confidence: 0.5 };
+    if (!this.config.llm.enabled) return { isCore: false, confidence: 0.5 };
     try {
-      const response = await fetch(`${this.config.baseURL}/chat/completions`, {
+      const response = await fetch(`${this.config.llm.baseURL}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.apiKey}` },
-        body: JSON.stringify({ model: this.config.model, messages: [{ role: 'system', content: '判断是否重要需要长期记住。回复JSON: {"isCore": true/false, "confidence": 0-1}' }, { role: 'user', content }], max_tokens: 100, temperature: 0.1 })
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
+        body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '判断是否重要需要长期记住。回复JSON: {"isCore": true/false, "confidence": 0-1}' }, { role: 'user', content }], max_tokens: 100, temperature: 0.1 })
       });
       return JSON.parse((await response.json()).choices[0].message.content);
     } catch (err) { this.log.error('[algo-memory] LLM错误:', err); return { isCore: false, confidence: 0.5 }; }
   }
   async extractKeywords(content: string): Promise<string> {
     const local = extractKeywords(content);
-    if (!this.config.enabled) return local;
+    if (!this.config.llm.enabled) return local;
     try {
-      const response = await fetch(`${this.config.baseURL}/chat/completions`, {
+      const response = await fetch(`${this.config.llm.baseURL}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.apiKey}` },
-        body: JSON.stringify({ model: this.config.model, messages: [{ role: 'system', content: '提取关键词，最多10个。回复JSON: {"keywords": ["k1", "k2"]}' }, { role: 'user', content }], max_tokens: 200, temperature: 0.2 })
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
+        body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '提取关键词，最多10个。回复JSON: {"keywords": ["k1", "k2"]}' }, { role: 'user', content }], max_tokens: 200, temperature: 0.2 })
       });
       return JSON.parse((await response.json()).choices[0].message.content).keywords.join(',');
     } catch (err) { return local; }
@@ -214,12 +214,12 @@ class LLMClient {
   async isDuplicate(c1: string, c2: string): Promise<{ isDuplicate: boolean; similarity: number }> {
     const sim = jaccardSimilarity(c1, c2);
     if (sim >= 0.98 || sim < 0.5) return { isDuplicate: sim >= 0.98, similarity: sim };
-    if (!this.config.enabled) return { isDuplicate: false, similarity: sim };
+    if (!this.config.llm.enabled) return { isDuplicate: false, similarity: sim };
     try {
-      const response = await fetch(`${this.config.baseURL}/chat/completions`, {
+      const response = await fetch(`${this.config.llm.baseURL}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.apiKey}` },
-        body: JSON.stringify({ model: this.config.model, messages: [{ role: 'system', content: '判断是否重复。回复JSON: {"isDuplicate": true/false, "similarity": 0-1}' }, { role: 'user', content: `内容1: ${c1}\n内容2: ${c2}` }], max_tokens: 100, temperature: 0.1 })
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
+        body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '判断是否重复。回复JSON: {"isDuplicate": true/false, "similarity": 0-1}' }, { role: 'user', content: `内容1: ${c1}\n内容2: ${c2}` }], max_tokens: 100, temperature: 0.1 })
       });
       return JSON.parse((await response.json()).choices[0].message.content);
     } catch (err) { return { isDuplicate: sim >= 0.85, similarity: sim }; }
@@ -241,7 +241,7 @@ class MemoryPlugin {
     this.log = log;
     this.cache = new LRUCache({ max: 100, ttl: 5 * 60 * 1000 });
     this.sessionCache = new LRUCache({ max: 50, ttl: 30 * 60 * 1000 });
-    if (this.config.llm.enabled) this.llmClient = new LLMClient(this.config.llm, log);
+    if (this.config.llm.enabled) this.llmClient = new LLMClient(this.config, log);
   }
 
   async init(stateDir: string): Promise<void> {
