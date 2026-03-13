@@ -10,36 +10,19 @@
     "config": {
       "type": "object",
       "properties": {
-        "autoCapture": {
-          "type": "boolean",
-          "default": true,
-          "description": "自动捕获对话中的记忆"
-        },
-        "autoRecall": {
-          "type": "boolean", 
-          "default": true,
-          "description": "自动召回相关记忆"
-        },
-        "maxResults": {
-          "type": "number",
-          "default": 5,
-          "description": "最大召回数量"
-        },
-        "maxContextChars": {
-          "type": "number",
-          "default": 500,
-          "description": "上下文最大字符数"
-        },
-        "cacheEnabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "启用缓存"
-        },
-        "cleanupDays": {
-          "type": "number",
-          "default": 90,
-          "description": "清理超过此天数的无用记忆"
-        },
+        "autoCapture": { "type": "boolean", "default": true, "description": "自动捕获对话中的记忆" },
+        "autoRecall": { "type": "boolean", "default": true, "description": "自动召回相关记忆" },
+        "maxResults": { "type": "number", "default": 5, "description": "最大召回数量" },
+        "maxContextChars": { "type": "number", "default": 500, "description": "上下文最大字符数" },
+        "cacheEnabled": { "type": "boolean", "default": true, "description": "启用缓存" },
+        "cleanupDays": { "type": "number", "default": 90, "description": "清理超过此天数的无用记忆" },
+        "cleanupDelayHours": { "type": "number", "default": 1, "description": "清理任务延迟启动小时数" },
+        "coreKeywords": { "type": "array", "items": { "type": "string" }, "description": "自动识别为核心记忆的关键词" },
+        "logLevel": { "type": "string", "enum": ["error", "warn", "info", "debug"], "default": "info", "description": "日志级别" },
+        "recencyDecay": { "type": "boolean", "default": true, "description": "启用时间衰减(近期记忆权重更高)" },
+        "recencyHalfLife": { "type": "number", "default": 90, "description": "时间衰减半衰期(天)" },
+        "publicMemory": { "type": "boolean", "default": false, "description": "启用公共记忆(所有Agent可共享)" },
+        "smartDedup": { "type": "boolean", "default": true, "description": "启用智能去重(Jaccard算法)" },
         "llm": {
           "type": "object",
           "properties": {

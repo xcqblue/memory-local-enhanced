@@ -17,6 +17,13 @@ interface Config {
   maxContextChars: number;
   cacheEnabled: boolean;
   cleanupDays: number;
+  cleanupDelayHours: number;
+  coreKeywords: string[];
+  logLevel: 'error' | 'warn' | 'info' | 'debug';
+  recencyDecay: boolean;
+  recencyHalfLife: number;
+  publicMemory: boolean;
+  smartDedup: boolean;
   llm: {
     enabled: boolean;
     provider: string;
@@ -34,6 +41,18 @@ const DEFAULT_CONFIG: Config = {
   maxContextChars: 500,
   cacheEnabled: true,
   cleanupDays: 90,
+  cleanupDelayHours: 1,
+  coreKeywords: [
+    '记住', '牢记', '重要', '不要忘记', '记住它', 
+    '这是关键', '永久保留', '一直记住', '别忘了',
+    'remember', 'important', 'never forget', 'always remember',
+    '关键', '核心', '必须记住', '一定要记住'
+  ],
+  logLevel: 'info',
+  recencyDecay: true,
+  recencyHalfLife: 90,
+  publicMemory: false,
+  smartDedup: true,
   llm: {
     enabled: false,
     provider: 'minimax',
@@ -57,6 +76,8 @@ interface Memory {
   created_at: number;
   last_accessed: number;
   content_hash: string;
+  owner?: string;
+  source?: string;
 }
 
 interface RecallResult {
@@ -96,6 +117,18 @@ function hashContent(content: string): string {
 }
 
 // 噪声过滤
+// 智能去重判断结果
+type DedupResult = 'DUPLICATE' | 'UPDATE' | 'NEW';
+
+// Jaccard 相似度 (0-1, 越高越相似)
+function jaccardSimilarity(text1: string, text2: string): number {
+  const set1 = new Set(text1.toLowerCase().split(''));
+  const set2 = new Set(text2.toLowerCase().split(''));
+  const intersection = new Set([...set1].filter(x => set2.has(x)));
+  const union = new Set([...set1, ...set2]);
+  return union.size === 0 ? 0 : intersection.size / union.size;
+}
+
 function isNoise(content: string): boolean {
   const lower = content.toLowerCase().trim();
   const noisePatterns = [
@@ -107,6 +140,25 @@ function isNoise(content: string): boolean {
     /^[\.。!?！?]+$/
   ];
   return noisePatterns.some(p => p.test(lower));
+}
+
+// 智能去重判断结果
+type DedupResult = 'DUPLICATE' | 'UPDATE' | 'NEW';
+
+// Jaccard 相似度 (0-1, 越高越相似)
+function jaccardSimilarity(text1: string, text2: string): number {
+  const set1 = new Set(text1.toLowerCase().split(''));
+  const set2 = new Set(text2.toLowerCase().split(''));
+  const intersection = new Set([...set1].filter(x => set2.has(x)));
+  const union = new Set([...set1, ...set2]);
+  return union.size === 0 ? 0 : intersection.size / union.size;
+}
+
+// 时间衰减函数
+function calculateRecencyScore(lastAccessed: number, halfLifeDays: number = 14): number {
+  const now = Date.now();
+  const daysPassed = (now - lastAccessed) / (1000 * 60 * 60 * 24);
+  return 0.3 + 0.7 * Math.pow(0.5, daysPassed / halfLifeDays);
 }
 
 // 规则分类 (6类)
@@ -229,12 +281,16 @@ export class MemoryPlugin {
 
     console.log('[Memory] 数据库初始化完成:', this.dbPath);
 
-    // 启动定时清理任务 (每天检查一次, 防重)
-    if (!this.cleanupTimer) {
-      this.cleanupTimer = setInterval(() => {
-        this.cleanupExpired().catch(err => console.error('[Memory] 定时清理失败:', err));
-      }, 24 * 60 * 60 * 1000);
-    }
+    // 启动定时清理任务 (延迟启动 + 每天检查一次, 防重)
+    const delayMs = (this.config.cleanupDelayHours || 1) * 60 * 60 * 1000;
+    setTimeout(() => {
+      this.cleanupExpired().catch(err => this.log('error', '定时清理失败:', err));
+      if (!this.cleanupTimer) {
+        this.cleanupTimer = setInterval(() => {
+          this.cleanupExpired().catch(err => this.log('error', '定时清理失败:', err));
+        }, 24 * 60 * 60 * 1000);
+      }
+    }, delayMs);
   }
 
   // 存储记忆
@@ -296,6 +352,32 @@ export class MemoryPlugin {
         'UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?'
       ).run(Date.now(), existing.id);
     } else {
+      // 智能去重 (Jaccard 相似度)
+      const dedup = await this.smartDedup(agentId, content);
+      
+      if (dedup.existingId) {
+        if (dedup.result === 'DUPLICATE') {
+          // 完全重复 - 更新访问时间
+          this.db.prepare(
+            'UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?'
+          ).run(Date.now(), dedup.existingId);
+          this.invalidateCache(agentId);
+          return;
+        } else if (dedup.result === 'UPDATE') {
+          // 相似内容 - 合并更新
+          const oldMemory = this.db.prepare('SELECT content FROM memories WHERE id = ?').get(dedup.existingId) as { content: string } | undefined;
+          if (oldMemory) {
+            const mergedContent = oldMemory.content + '\n' + content;
+            const safeMerged = mergedContent.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            this.db.prepare(
+              'UPDATE memories SET content = ?, access_count = access_count + 1, last_accessed = ? WHERE id = ?'
+            ).run(safeMerged, Date.now(), dedup.existingId);
+            this.invalidateCache(agentId);
+            return;
+          }
+        }
+      }
+      
       // 写入新记忆 (使用事务保证一致性)
       // 转义内容防止 XSS
       const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -481,30 +563,48 @@ export class MemoryPlugin {
     let memories: Memory[];
     
     if (query.trim()) {
-      // 有查询词：优先 core + 关键词匹配
+      // 有查询词：搜索匹配的记忆 (支持公共记忆)
+      const searchCondition = this.config.publicMemory 
+        ? '(agent_id = ? OR owner = "public") AND (content LIKE ? OR keywords LIKE ?)'
+        : 'agent_id = ? AND (content LIKE ? OR keywords LIKE ?)';
+      
       memories = this.db.prepare(`
         SELECT * FROM memories 
-        WHERE agent_id = ?
-        AND (content LIKE ? OR keywords LIKE ?)
+        WHERE ${searchCondition}
         ORDER BY 
           CASE layer WHEN 'core' THEN 0 ELSE 1 END,
           importance DESC, access_count DESC, last_accessed DESC
         LIMIT ?
-      `).all(agentId, `%${query}%`, `%${query}%`, this.config.maxResults) as Memory[];
+      `).all(agentId, `%${query}%`, `%${query}%`, this.config.maxResults * 2) as Memory[];
     } else {
-      // 无查询词：返回最近的和重要的
+      // 无查询词：返回最近的和重要的 (支持公共记忆)
+      const searchCondition = this.config.publicMemory 
+        ? 'agent_id = ? OR owner = "public"'
+        : 'agent_id = ?';
+      
       memories = this.db.prepare(`
         SELECT * FROM memories 
-        WHERE agent_id = ?
+        WHERE ${searchCondition}
         ORDER BY 
           CASE layer WHEN 'core' THEN 0 ELSE 1 END,
           importance DESC, access_count DESC, last_accessed DESC
         LIMIT ?
-      `).all(agentId, this.config.maxResults) as Memory[];
+      `).all(agentId, this.config.maxResults * 2) as Memory[];
     }
 
     // 二次校验
-    const validMemories = memories.filter(m => m.agent_id === agentId);
+    let validMemories = memories.filter(m => 
+      m.agent_id === agentId || m.owner === 'public'
+    );
+
+    // 时间衰减计算 (如果开启)
+    if (this.config.recencyDecay) {
+      validMemories = validMemories.map(m => ({
+        ...m,
+        _score: (m.layer === 'core' ? 1.5 : 1.0) * m.importance * m.access_count * calculateRecencyScore(m.last_accessed, this.config.recencyHalfLife)
+      })).sort((a, b) => (b as any)._score - (a as any)._score)
+        .map(({ _score, ...m }) => m);
+    }
 
     // Token 限制
     const limited = this.limitByTokens(validMemories, this.config.maxContextChars);
@@ -698,6 +798,32 @@ export class MemoryPlugin {
     return false;
   }
 
+  // 更新记忆内容
+  updateMemory(memoryId: string, newContent: string): boolean {
+    if (!memoryId || !newContent) return false;
+    
+    const memory = this.db.prepare('SELECT agent_id FROM memories WHERE id = ?').get(memoryId) as { agent_id: string } | undefined;
+    if (!memory) return false;
+    
+    const safeContent = newContent.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const safeKeywords = extractKeywords(safeContent);
+    const contentHash = hashContent(safeContent);
+    
+    this.db.prepare(`
+      UPDATE memories 
+      SET content = ?, keywords = ?, content_hash = ?, last_accessed = ?
+      WHERE id = ?
+    `).run(safeContent, safeKeywords, contentHash, Date.now(), memoryId);
+    
+    // 更新 FTS 索引
+    this.db.prepare('DELETE FROM memories_fts WHERE id = ?').run(memoryId);
+    this.db.prepare('INSERT INTO memories_fts (id, content, keywords) VALUES (?, ?, ?)')
+      .run(memoryId, safeContent, safeKeywords);
+    
+    this.invalidateCache(memory.agent_id);
+    return true;
+  }
+
   // 搜索记忆 (FTS5)
   searchMemories(agentId: string, query: string, limit = 10): Memory[] {
     if (!agentId) return [];
@@ -754,6 +880,140 @@ export class MemoryPlugin {
     transaction();
     
     return { ...memory, content: safeContent };
+  }
+
+  // 写入公共记忆
+  async writePublicMemory(content: string, type: Memory['type'] = 'fact'): Promise<Memory | null> {
+    if (!content) return null;
+    if (!this.config.publicMemory) {
+      this.log('warn', '公共记忆功能未启用');
+      return null;
+    }
+    
+    const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    
+    const memory: Memory = {
+      id: generateId(),
+      agent_id: 'public',
+      content: safeContent,
+      type,
+      layer: 'general',
+      keywords: extractKeywords(safeContent),
+      importance: 0.5,
+      access_count: 1,
+      created_at: Date.now(),
+      last_accessed: Date.now(),
+      content_hash: hashContent(safeContent),
+      owner: 'public',
+      source: 'dialog'
+    };
+
+    const insertMemory = this.db.prepare(`
+      INSERT INTO memories (id, agent_id, content, type, layer, keywords, importance, access_count, created_at, last_accessed, content_hash, owner, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const transaction = this.db.transaction(() => {
+      insertMemory.run(
+        memory.id, memory.agent_id, memory.content, memory.type, memory.layer,
+        memory.keywords, memory.importance, memory.access_count,
+        memory.created_at, memory.last_accessed, memory.content_hash,
+        memory.owner, memory.source
+      );
+      
+      this.db.prepare('INSERT INTO memories_fts (id, content, keywords) VALUES (?, ?, ?)')
+        .run(memory.id, safeContent, memory.keywords);
+    });
+    
+    transaction();
+    
+    this.log('info', `写入公共记忆: ${memory.id}`);
+    return memory;
+  }
+
+  // 智能去重 (Jaccard + 可选 LLM)
+  async smartDedup(agentId: string, content: string): Promise<{ result: DedupResult; existingId?: string; merged?: string }> {
+    if (!this.config.smartDedup) {
+      return { result: 'NEW' };
+    }
+
+    // 1. Jaccard 快速过滤
+    const similar = this.db.prepare(`
+      SELECT * FROM memories 
+      WHERE agent_id = ? 
+      ORDER BY last_accessed DESC 
+      LIMIT 20
+    `).all(agentId) as Memory[];
+
+    if (similar.length === 0) {
+      return { result: 'NEW' };
+    }
+
+    const JACCARD_THRESHOLD = 0.85;
+    let existingId: string | undefined;
+
+    for (const mem of similar) {
+      const similarity = jaccardSimilarity(content, mem.content);
+      
+      if (similarity >= 0.98) {
+        return { result: 'DUPLICATE', existingId: mem.id };
+      } else if (similarity >= JACCARD_THRESHOLD) {
+        existingId = mem.id;
+      }
+    }
+
+    if (existingId) {
+      return { result: 'UPDATE', existingId };
+    }
+
+    // 2. LLM 精调 (如果 Jaccard 没找到但很接近)
+    const nearThreshold = similar.find(m => jaccardSimilarity(content, m.content) >= 0.6);
+    
+    if (!nearThreshold || !this.config.llm.enabled || !this.config.llm.apiKey) {
+      return { result: 'NEW' };
+    }
+
+    // 调用 LLM
+    const prompt = `判断以下新内容与已有记忆的关系：
+已有记忆: ${nearThreshold.content}
+新内容: ${content}
+判断结果 (只返回 JSON): {"result": "DUPLICATE|UPDATE|NEW", "reason": "理由"}`;
+
+    try {
+      const { provider, apiKey, model, baseURL } = this.config.llm;
+      let response: Response;
+      
+      if (provider === 'minimax') {
+        const endpoint = baseURL.includes('/v2') ? '/text/chatcompletion_v2' : '/text/chatcompletion_pro';
+        response = await fetch(`${baseURL}${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0.3 })
+        });
+      } else {
+        response = await fetch(`${baseURL}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0.3 })
+        });
+      }
+
+      const data = await response.json();
+      const text = data.choices?.[0]?.message?.content || '';
+      const match = text.match(/\{[\s\S]*\}/);
+      
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        const result = parsed.result?.toUpperCase();
+        if (result === 'DUPLICATE' || result === 'UPDATE') {
+          return { result, existingId: nearThreshold.id };
+        }
+      }
+    } catch (error) {
+      this.log('error', '智能去重失败:', error);
+    }
+
+    return { result: 'NEW' };
   }
 
   // 关闭
@@ -1076,6 +1336,23 @@ export async function onload(context: any): Promise<void> {
               return { type: 'text', content: `已删除记忆 ${opts.id}` };
             }
             return { type: 'text', content: `删除失败: 记忆不存在` };
+          }
+        },
+        'update-memory': {
+          description: '更新单条记忆内容',
+          options: [
+            { name: 'id', alias: 'i', required: true, description: '记忆 ID' },
+            { name: 'content', alias: 'c', required: true, description: '新内容' }
+          ],
+          execute: async (opts: any) => {
+            if (!opts.id || !opts.content) {
+              return { type: 'text', content: '错误: 请指定记忆 ID (-i) 和新内容 (-c)' };
+            }
+            const result = memoryPlugin.updateMemory(opts.id, opts.content);
+            if (result) {
+              return { type: 'text', content: `更新记忆 ${opts.id} 成功` };
+            }
+            return { type: 'text', content: '更新失败: 记忆不存在' };
           }
         },
         cleanup: {
