@@ -97,9 +97,11 @@ function isNoise(content: string): boolean {
   const lower = content.toLowerCase().trim();
   const noisePatterns = [
     /^hi|^hello|^hey/i,
-    /^好的|^收到|^了解|^ok|^okay/i,
+    /^好的|^收到|^了解|^ok|^okay|^好滴|^明白了/i,
     /^(thanks|thank you)/i,
-    /^(好的|收到)/i
+    /^(好的|收到|了解|明白)/i,
+    /^[\s]*$/,
+    /^[\.。!?！?]+$/
   ];
   return noisePatterns.some(p => p.test(lower));
 }
@@ -148,6 +150,7 @@ export class MemoryPlugin {
   private config: Config;
   private cache: LRUCache<string, Memory[]>;
   private dbPath: string;
+  private cleanupTimer: NodeJS.Timeout | null = null;
 
   constructor(config: Partial<Config> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -211,10 +214,12 @@ export class MemoryPlugin {
 
     console.log('[Memory] 数据库初始化完成:', this.dbPath);
 
-    // 启动定时清理任务 (每天检查一次)
-    setInterval(() => {
-      this.cleanupExpired().catch(err => console.error('[Memory] 定时清理失败:', err));
-    }, 24 * 60 * 60 * 1000);
+    // 启动定时清理任务 (每天检查一次, 防重)
+    if (!this.cleanupTimer) {
+      this.cleanupTimer = setInterval(() => {
+        this.cleanupExpired().catch(err => console.error('[Memory] 定时清理失败:', err));
+      }, 24 * 60 * 60 * 1000);
+    }
   }
 
   // 存储记忆
@@ -245,8 +250,14 @@ export class MemoryPlugin {
       try {
         const enhanced = await this.llmEnhance(content);
         if (enhanced) {
-          type = enhanced.type || type;
-          keywords = enhanced.keywords || keywords;
+          // 只有 LLM 返回合法 type 时才使用
+          if (enhanced.type) {
+            type = enhanced.type;
+          }
+          // 只有 LLM 返回有效关键词时才使用
+          if (enhanced.keywords && enhanced.keywords !== '[]') {
+            keywords = enhanced.keywords;
+          }
         }
       } catch (error) {
         console.error('[Memory] LLM 增强失败:', error);
@@ -382,12 +393,12 @@ export class MemoryPlugin {
       const match = text.match(/\{[\s\S]*\}/);
       if (match) {
         const result = JSON.parse(match[0]);
-        // 校验 type 合法性
+        // 校验 type 合法性，如果非法则返回 undefined
         const validTypes = ['preference', 'fact', 'event', 'entity', 'case', 'pattern', 'other'];
         const type = validTypes.includes(result.type) ? result.type : undefined;
         return {
           type,
-          keywords: JSON.stringify(result.keywords?.split(',').map((k: string) => k.trim()).filter(Boolean) || [])
+          keywords: result.keywords ? JSON.stringify(result.keywords.split(',').map((k: string) => k.trim()).filter(Boolean).slice(0, 10)) : undefined
         };
       }
     } catch (error) {
@@ -404,8 +415,9 @@ export class MemoryPlugin {
       return { hasMemory: false, memories: [], message: '无效 Agent ID' };
     }
 
-    // 查缓存
-    const cacheKey = `recall:${agentId}:${hashContent(query)}`;
+    // 查缓存 (限制 query 长度避免 key 过长)
+    const queryHash = hashContent(query.slice(0, 100));
+    const cacheKey = `recall:${agentId}:${queryHash}`;
     if (this.config.cacheEnabled) {
       const cached = this.cache.get(cacheKey);
       if (cached) {
@@ -454,12 +466,9 @@ export class MemoryPlugin {
     // Token 限制
     const limited = this.limitByTokens(validMemories, this.config.maxContextChars);
 
-    // 自动升级频繁访问的记忆为 core
-    for (const m of limited) {
-      if (m.layer === 'general' && m.access_count >= 5) {
-        this.promoteToCore(agentId, m.id);
-      }
-    }
+    // 自动升级频繁访问的记忆为 core (注意: 需要在更新 access_count 之后判断)
+    // 这里不做自动升级，而是让 store 中的更新逻辑来处理
+    // 因为 recall 时只是读取，不应该改变 access_count
 
     // 缓存
     if (this.config.cacheEnabled) {
@@ -660,6 +669,11 @@ export class MemoryPlugin {
 
   // 关闭
   close(): void {
+    // 清除定时任务
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
     if (this.db) {
       this.db.close();
     }
