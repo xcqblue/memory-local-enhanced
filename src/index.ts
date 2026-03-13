@@ -338,7 +338,7 @@ export class MemoryPlugin {
 
 只返回 JSON 格式：{"type": "类型", "keywords": "关键词"}
 
-内容：${content.slice(0, 500)}`;
+内容：${(content.slice(0, 500)).replace(/[{}"\n]/g, ' ')}`;
 
     try {
       let response: Response;
@@ -591,7 +591,7 @@ export class MemoryPlugin {
   }
 
   // 升级为 core 记忆 (基于访问频率)
-  async promoteToCore(agentId: string, memoryId: string): Promise<void> {
+  async promoteToCore(agentId: string, memoryId: string): Promise<boolean> {
     const memory = this.db.prepare('SELECT * FROM memories WHERE id = ? AND agent_id = ?')
       .get(memoryId, agentId) as Memory | undefined;
     
@@ -599,7 +599,9 @@ export class MemoryPlugin {
       this.db.prepare('UPDATE memories SET layer = "core", importance = 1.0 WHERE id = ?').run(memoryId);
       this.invalidateCache(agentId);
       console.log(`[Memory] 记忆 ${memoryId} 已升级为 core`);
+      return true;
     }
+    return false;
   }
 
   // 获取统计信息
@@ -752,8 +754,10 @@ export async function onload(context: any): Promise<void> {
             { name: 'limit', alias: 'l', defaultValue: 20 }
           ],
           execute: async (opts: any) => {
-            const agentId = opts.agent || 'default';
-            const memories = memoryPlugin.listMemories(agentId, opts.limit || 20);
+            if (!opts.agent) {
+              return { type: 'text', content: '错误: 请指定 agent ID (-a <agent-id>)' };
+            }
+            const memories = memoryPlugin.listMemories(opts.agent, opts.limit || 20);
             return { type: 'text', content: JSON.stringify(memories, null, 2) };
           }
         },
@@ -764,8 +768,10 @@ export async function onload(context: any): Promise<void> {
             { name: 'query', alias: 'q', required: true, description: '搜索关键词' }
           ],
           execute: async (opts: any) => {
-            const agentId = opts.agent || 'default';
-            const memories = memoryPlugin.searchMemories(agentId, opts.query);
+            if (!opts.agent) {
+              return { type: 'text', content: '错误: 请指定 agent ID (-a <agent-id>)' };
+            }
+            const memories = memoryPlugin.searchMemories(opts.agent, opts.query);
             return { type: 'text', content: JSON.stringify(memories, null, 2) };
           }
         },
@@ -775,7 +781,7 @@ export async function onload(context: any): Promise<void> {
             { name: 'agent', alias: 'a', description: 'Agent ID (不填则全局)' }
           ],
           execute: async (opts: any) => {
-            const stats = memoryPlugin.getStats(opts.agent);
+            const stats = memoryPlugin.getStats(opts.agent || undefined);
             return { type: 'text', content: JSON.stringify(stats, null, 2) };
           }
         },
@@ -785,6 +791,9 @@ export async function onload(context: any): Promise<void> {
             { name: 'agent', alias: 'a', required: true, description: 'Agent ID' }
           ],
           execute: async (opts: any) => {
+            if (!opts.agent) {
+              return { type: 'text', content: '错误: 请指定 agent ID (-a <agent-id>)' };
+            }
             await memoryPlugin.deleteAgent(opts.agent);
             return { type: 'text', content: `已删除 Agent ${opts.agent} 的所有记忆` };
           }
