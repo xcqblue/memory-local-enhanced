@@ -1,16 +1,17 @@
 /**
- * algo-memory v1.4.0
+ * algo-memory v1.5.0
  * 纯算法长期记忆插件 - 0 API / 可选 LLM 增强
  * 借鉴 memory-lancedb-pro 架构优化
  */
 
+import { Type } from '@sinclair/typebox';
 import LRUCache from 'lru-cache';
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
-// ============= 配置 =============
+// ============= 类型定义 =============
 interface Config {
   autoCapture: boolean;
   autoRecall: boolean;
@@ -441,87 +442,181 @@ class MemoryPlugin {
   close(): void { if (this.cleanupInterval) { clearInterval(this.cleanupInterval); this.cleanupInterval = null; } if (this.db) { this.db.close(); this.db = null; } this.log.info('[algo-memory] 插件关闭'); }
 }
 
-// ============= 插件定义 =============
-const algoMemoryPlugin = {
-  id: 'algo-memory', name: 'algo-memory', description: '纯算法长期记忆插件 - 0 API，可选 LLM 增强', kind: 'memory' as const,
+// 导出 register 函数（符合 OpenClaw 官方规范）
+export default function register(api: any): void {
+  const log = api.logger || console;
+  const plugin = new MemoryPlugin(api.pluginConfig || {}, log);
+  const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
+  plugin.init(stateDir);
 
-  register(api: any): void {
-    const log = api.logger || console;
-    const plugin = new MemoryPlugin(api.pluginConfig || {}, log);
-    const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
-    plugin.init(stateDir);
+  // 工具定义（使用 Typebox 符合官方规范）
+  const toolDefinitions = [
+    {
+      name: 'algo_memory_list',
+      description: '列出所有记忆',
+      parameters: Type.Object({
+        agentId: Type.String(),
+        limit: Type.Optional(Type.Number())
+      })
+    },
+    {
+      name: 'algo_memory_search',
+      description: '搜索记忆',
+      parameters: Type.Object({
+        agentId: Type.String(),
+        query: Type.String()
+      })
+    },
+    {
+      name: 'algo_memory_stats',
+      description: '查看记忆统计',
+      parameters: Type.Object({
+        agentId: Type.String()
+      })
+    },
+    {
+      name: 'algo_memory_get',
+      description: '获取单条记忆详情',
+      parameters: Type.Object({
+        agentId: Type.String(),
+        memoryId: Type.String()
+      })
+    },
+    {
+      name: 'algo_memory_delete',
+      description: '删除单条记忆',
+      parameters: Type.Object({
+        agentId: Type.String(),
+        memoryId: Type.String()
+      })
+    },
+    {
+      name: 'algo_memory_delete_bulk',
+      description: '批量删除记忆',
+      parameters: Type.Object({
+        agentId: Type.String(),
+        memoryIds: Type.Array(Type.String())
+      })
+    },
+    {
+      name: 'algo_memory_clear',
+      description: '清空记忆（可选保留核心记忆）',
+      parameters: Type.Object({
+        agentId: Type.String(),
+        keepCore: Type.Optional(Type.Boolean())
+      })
+    },
+    {
+      name: 'algo_memory_update',
+      description: '更新记忆内容',
+      parameters: Type.Object({
+        agentId: Type.String(),
+        memoryId: Type.String(),
+        content: Type.String()
+      })
+    },
+    {
+      name: 'algo_memory_export',
+      description: '导出所有记忆',
+      parameters: Type.Object({
+        agentId: Type.String()
+      })
+    },
+    {
+      name: 'algo_memory_import',
+      description: '导入记忆',
+      parameters: Type.Object({
+        agentId: Type.String(),
+        memories: Type.Array(Type.Object({}))
+      })
+    },
+    {
+      name: 'algo_memory_session',
+      description: '获取当前 Session 的临时记忆',
+      parameters: Type.Object({
+        agentId: Type.String()
+      })
+    }
+  ];
 
-    // 工具 (11个)
-    const tools = [
-      { name: 'algo_memory_list', desc: '列出记忆', p: { agentId: 'string', limit: 'number' } },
-      { name: 'algo_memory_search', desc: '搜索记忆', p: { agentId: 'string', query: 'string' } },
-      { name: 'algo_memory_stats', desc: '查看统计', p: { agentId: 'string' } },
-      { name: 'algo_memory_get', desc: '获取单条', p: { agentId: 'string', memoryId: 'string' } },
-      { name: 'algo_memory_delete', desc: '删除记忆', p: { agentId: 'string', memoryId: 'string' } },
-      { name: 'algo_memory_delete_bulk', desc: '批量删除', p: { agentId: 'string', memoryIds: { type: 'array', items: { type: 'string' } } } },
-      { name: 'algo_memory_clear', desc: '清空记忆', p: { agentId: 'string', keepCore: 'boolean' } },
-      { name: 'algo_memory_update', desc: '更新记忆', p: { agentId: 'string', memoryId: 'string', content: 'string' } },
-      { name: 'algo_memory_export', desc: '导出记忆', p: { agentId: 'string' } },
-      { name: 'algo_memory_import', desc: '导入记忆', p: { agentId: 'string', memories: { type: 'array' } } },
-      { name: 'algo_memory_session', desc: '获取Session记忆', p: { agentId: 'string' } }
-    ];
-
-    tools.forEach(tool => {
-      api.registerTool({
-        name: tool.name, label: tool.name.replace('_', ' ').toUpperCase(), description: tool.desc,
-        parameters: { type: 'object', properties: tool.p, required: Object.keys(tool.p) },
-        async execute(_id: string, params: any) {
-          try {
-            let result;
-            switch (tool.name) {
-              case 'algo_memory_list': result = plugin.listMemories(params.agentId, params.limit || 20); break;
-              case 'algo_memory_search': result = plugin.searchMemories(params.agentId, params.query); break;
-              case 'algo_memory_stats': result = plugin.getStats(params.agentId); break;
-              case 'algo_memory_get': result = plugin.getMemory(params.agentId, params.memoryId); break;
-              case 'algo_memory_delete': result = { success: plugin.deleteMemory(params.agentId, params.memoryId) }; break;
-              case 'algo_memory_delete_bulk': result = { deleted: plugin.deleteBulk(params.agentId, params.memoryIds) }; break;
-              case 'algo_memory_clear': result = { deleted: plugin.clearMemories(params.agentId, params.keepCore !== false) }; break;
-              case 'algo_memory_update': result = { success: plugin.updateMemory(params.agentId, params.memoryId, params.content) }; break;
-              case 'algo_memory_export': result = plugin.exportMemories(params.agentId); break;
-              case 'algo_memory_import': result = { imported: plugin.importMemories(params.agentId, params.memories) }; break;
-              case 'algo_memory_session': result = plugin.getSessionMemory(params.agentId); break;
-            }
-            return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-          } catch (err: any) { return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true }; }
-        }
-      });
-    });
-
-    // 获取用户配置
-    const cfg = api.pluginConfig || {};
-
-    // 钩子
-    api.on('agent_end', async (e: any, ctx: any) => {
-      const sessionKey = ctx.sessionKey || 'default';
-      const messages = ctx.messages || [];
-      if (cfg.autoCapture && messages.length > 0) await plugin.store(sessionKey, messages);
-    });
-
-    api.onConversationTurn(async (messages: any[], sessionKey: string, _owner: string) => {
-      const agentId = sessionKey || 'default';
-      if (cfg.autoCapture) await plugin.store(agentId, messages);
-      if (cfg.autoRecall) {
-        const userMsg = messages.find((m: any) => m.role === 'user');
-        if (userMsg && shouldRetrieve(userMsg.content || '', cfg.adaptiveRetrieval || DEFAULT_CONFIG.adaptiveRetrieval)) {
-          const recallResult = await plugin.recall(agentId, userMsg.content || '');
-          // 将召回结果添加到 session memory，供后续工具使用
-          if (recallResult.hasMemory && recallResult.memories.length > 0) {
-            const recallText = recallResult.memories.map(m => m.content).join('\n');
-            plugin.addSessionMemory(agentId, `[召回] ${recallText}`);
-            log.info(`[algo-memory] 自动召回: ${recallResult.memories.length} 条记忆`);
+  // 注册工具
+  toolDefinitions.forEach(tool => {
+    api.registerTool({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+      async execute(_id: string, params: any) {
+        try {
+          let result: any;
+          switch (tool.name) {
+            case 'algo_memory_list':
+              result = plugin.listMemories(params.agentId, params.limit || 20);
+              break;
+            case 'algo_memory_search':
+              result = plugin.searchMemories(params.agentId, params.query);
+              break;
+            case 'algo_memory_stats':
+              result = plugin.getStats(params.agentId);
+              break;
+            case 'algo_memory_get':
+              result = plugin.getMemory(params.agentId, params.memoryId);
+              break;
+            case 'algo_memory_delete':
+              result = { success: plugin.deleteMemory(params.agentId, params.memoryId) };
+              break;
+            case 'algo_memory_delete_bulk':
+              result = { deleted: plugin.deleteBulk(params.agentId, params.memoryIds) };
+              break;
+            case 'algo_memory_clear':
+              result = { deleted: plugin.clearMemories(params.agentId, params.keepCore !== false) };
+              break;
+            case 'algo_memory_update':
+              result = { success: plugin.updateMemory(params.agentId, params.memoryId, params.content) };
+              break;
+            case 'algo_memory_export':
+              result = plugin.exportMemories(params.agentId);
+              break;
+            case 'algo_memory_import':
+              result = { imported: plugin.importMemories(params.agentId, params.memories) };
+              break;
+            case 'algo_memory_session':
+              result = plugin.getSessionMemory(params.agentId);
+              break;
           }
+          return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        } catch (err: any) {
+          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
         }
       }
     });
+  });
 
-    api.onDeactivate(() => plugin.close());
-    log.info(`[algo-memory] 插件注册完成, 工具数: ${tools.length}, 每轮写入: ${cfg.capturePerTurn || 3}条, 三层晋升: ${cfg.tier?.enabled}`);
-  }
-};
+  // 获取用户配置
+  const cfg = api.pluginConfig || {};
 
-export default algoMemoryPlugin;
+  // 钩子
+  api.on('agent_end', async (_e: any, ctx: any) => {
+    const sessionKey = ctx.sessionKey || 'default';
+    const messages = ctx.messages || [];
+    if (cfg.autoCapture && messages.length > 0) await plugin.store(sessionKey, messages);
+  });
+
+  api.onConversationTurn(async (messages: any[], sessionKey: string, _owner: string) => {
+    const agentId = sessionKey || 'default';
+    if (cfg.autoCapture) await plugin.store(agentId, messages);
+    if (cfg.autoRecall) {
+      const userMsg = messages.find((m: any) => m.role === 'user');
+      if (userMsg && shouldRetrieve(userMsg.content || '', cfg.adaptiveRetrieval || DEFAULT_CONFIG.adaptiveRetrieval)) {
+        const recallResult = await plugin.recall(agentId, userMsg.content || '');
+        if (recallResult.hasMemory && recallResult.memories.length > 0) {
+          const recallText = recallResult.memories.map(m => m.content).join('\n');
+          plugin.addSessionMemory(agentId, `[召回] ${recallText}`);
+          log.info(`[algo-memory] 自动召回: ${recallResult.memories.length} 条记忆`);
+        }
+      }
+    }
+  });
+
+  api.onDeactivate(() => plugin.close());
+  log.info(`[algo-memory] 插件注册完成, 工具数: ${toolDefinitions.length}, 每轮写入: ${cfg.capturePerTurn || 3}条, 三层晋升: ${cfg.tier?.enabled}`);
+}

@@ -23,6 +23,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.32.0",
     "better-sqlite3": "^9.4.0",
     "lru-cache": "^10.0.0"
   },
