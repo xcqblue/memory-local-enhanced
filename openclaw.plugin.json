@@ -1,7 +1,7 @@
 {
   "id": "algo-memory",
   "name": "algo-memory",
-  "description": "纯算法长期记忆插件 - 0 API / 可选 LLM 增强",
+  "description": "纯算法长期记忆插件 - 0 API，完全本地运行，无需网络",
   "version": "1.0.0",
   "kind": "memory",
   "homepage": "https://github.com/xcqblue/algo-memory",
