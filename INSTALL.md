@@ -1,16 +1,13 @@
-# algo-memory 安装指南
+# 安装指南
 
 ## 环境要求
 
-| 项目 | 要求 |
-|------|------|
-| OpenClaw | 2.0.0+ |
-| Node.js | 18+ |
-| 操作系统 | Linux / macOS / Windows (WSL) |
+- OpenClaw 2.0.0+
+- Node.js 18+
 
-## ⚠️ 重要：必须按顺序执行
+## 安装步骤
 
-### 步骤 1: 克隆仓库
+### 1. 克隆仓库
 
 ```bash
 cd ~/.openclaw/plugins
@@ -18,27 +15,13 @@ git clone https://github.com/xcqblue/algo-memory.git
 cd algo-memory
 ```
 
-### 步骤 2: 安装依赖 (关键!)
+### 2. 安装依赖
 
 ```bash
 npm install
 ```
 
-**⚠️ 这一步必须执行，否则：**
-- 会报错 "node_modules not found"
-- 会报错 "better-sqlite3 bindings not found"
-
-### 步骤 3: 重新编译原生模块 (关键!)
-
-```bash
-npm rebuild better-sqlite3
-```
-
-**⚠️ 这一步必须执行，否则：**
-- 会报错 "Cannot find module 'better-sqlite3'"
-- 会报错 "native bindings not found"
-
-### 步骤 4: 配置 OpenClaw
+### 3. 配置 OpenClaw
 
 编辑 `~/.openclaw/openclaw.json`:
 
@@ -46,9 +29,7 @@ npm rebuild better-sqlite3
 {
   "plugins": {
     "allow": ["algo-memory"],
-    "slots": {
-      "memory": "algo-memory"
-    },
+    "slots": { "memory": "algo-memory" },
     "entries": {
       "algo-memory": {
         "enabled": true,
@@ -57,6 +38,7 @@ npm rebuild better-sqlite3
           "autoRecall": true,
           "maxResults": 5,
           "cleanupDays": 180,
+          "smartDedup": true,
           "recencyDecay": true
         }
       }
@@ -65,7 +47,7 @@ npm rebuild better-sqlite3
 }
 ```
 
-### 步骤 5: 重启 Gateway
+### 4. 重启 Gateway
 
 ```bash
 openclaw gateway restart
@@ -73,62 +55,14 @@ openclaw gateway restart
 
 ---
 
-## 完整安装命令
+## 验证
 
 ```bash
-# 1. 克隆
-cd ~/.openclaw/plugins
-git clone https://github.com/xcqblue/algo-memory.git
-cd algo-memory
-
-# 2. 安装依赖 (必须!)
-npm install
-
-# 3. 重新编译 (必须!)
-npm rebuild better-sqlite3
-
-# 4. 配置
-# 编辑 ~/.openclaw/openclaw.json 添加配置
-
-# 5. 重启
-openclaw gateway restart
+openclaw logs | grep algo-memory
 ```
 
----
-
-## 故障排查
-
-### 错误1: node_modules not found
-
-```bash
-npm install
+预期输出:
 ```
-
-### 错误2: better-sqlite3 bindings not found
-
-```bash
-npm rebuild better-sqlite3
+[algo-memory] 插件注册完成, 工具数: 7
+[algo-memory] 数据库初始化完成
 ```
-
-### 错误3: 插件崩溃
-
-确保使用最新版本:
-```bash
-git pull origin main
-npm install
-npm rebuild better-sqlite3
-openclaw gateway restart
-```
-
----
-
-## 常见问题
-
-### Q: 需要 Node.js 吗？
-A: 是的，需要 Node.js 18+
-
-### Q: 需要 API Key 吗？
-A: 不需要，完全本地运行
-
-### Q: 与 Memos 冲突吗？
-A: 是的，slots.memory 只能选一个
