@@ -7,7 +7,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "postinstall": "npm rebuild better-sqlite3"
+    "postinstall": "npm rebuild better-sqlite3",
+    "algo": "node cli.cjs"
   },
   "keywords": [
     "openclaw",
@@ -31,7 +32,12 @@
   },
   "openclaw": {
     "id": "algo-memory",
-    "extensions": ["./src/index.ts"],
+    "extensions": [
+      "./src/index.ts"
+    ],
     "installDependencies": true
+  },
+  "bin": {
+    "algo-memory": "./cli.cjs"
   }
 }
