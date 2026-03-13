@@ -2,82 +2,30 @@
   "id": "algo-memory",
   "name": "algo-memory",
   "description": "纯算法长期记忆插件 - 0 API，可选 LLM 增强",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "kind": "memory",
   "homepage": "https://github.com/xcqblue/algo-memory",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "autoCapture": { "type": "boolean", "default": true, "description": "自动捕获记忆" },
-      "autoRecall": { "type": "boolean", "default": true, "description": "自动召回记忆" },
-      "maxResults": { "type": "number", "default": 5, "description": "召回数量" },
-      "cleanupDays": { "type": "number", "default": 180, "description": "清理天数" },
-      "recencyDecay": { "type": "boolean", "default": true, "description": "时间衰减" },
-      "recencyHalfLife": { "type": "number", "default": 180, "description": "半衰期(天)" },
-      "smartDedup": { "type": "boolean", "default": true, "description": "智能去重" },
-      "dedupThreshold": { "type": "number", "default": 0.85, "description": "去重阈值" },
-      "coreKeywords": { "type": "array", "items": { "type": "string" }, "description": "核心关键词" },
-      "noiseFilter": {
-        "type": "object",
-        "description": "噪声过滤",
-        "properties": {
-          "enabled": { "type": "boolean", "default": true },
-          "skipGreetings": { "type": "boolean", "default": true },
-          "skipCommands": { "type": "boolean", "default": true }
-        }
-      },
-      "adaptiveRetrieval": {
-        "type": "object",
-        "description": "自适应检索",
-        "properties": {
-          "enabled": { "type": "boolean", "default": true },
-          "minQueryLength": { "type": "number", "default": 2 }
-        }
-      },
-      "sessionMemory": {
-        "type": "object",
-        "description": "Session 记忆",
-        "properties": {
-          "enabled": { "type": "boolean", "default": false },
-          "maxSessionItems": { "type": "number", "default": 10 }
-        }
-      },
-      "weibullDecay": {
-        "type": "object",
-        "description": "Weibull 衰减",
-        "properties": {
-          "enabled": { "type": "boolean", "default": false },
-          "shape": { "type": "number", "default": 1.5 },
-          "scale": { "type": "number", "default": 90 }
-        }
-      },
-      "scopes": {
-        "type": "object",
-        "description": "多 Scope 隔离",
-        "properties": {
-          "enabled": { "type": "boolean", "default": false },
-          "defaultScope": { "type": "string", "default": "agent" }
-        }
-      },
-      "llm": { "type": "object", "description": "LLM 配置", "properties": {
-          "enabled": { "type": "boolean", "default": false },
-          "provider": { "type": "string", "default": "openai" },
-          "apiKey": { "type": "string", "default": "" },
-          "model": { "type": "string", "default": "gpt-4o-mini" },
-          "baseURL": { "type": "string", "default": "https://api.openai.com/v1" }
-        }
-      },
-      "threshold": {
-        "type": "object",
-        "description": "LLM 阈值",
-        "properties": {
-          "useLlmForCore": { "type": "boolean", "default": false },
-          "useLlmForExtract": { "type": "boolean", "default": false },
-          "useLlmForDedup": { "type": "boolean", "default": false },
-          "minConfidence": { "type": "number", "default": 0.8 }
-        }
-      }
+      "autoCapture": { "type": "boolean", "default": true },
+      "autoRecall": { "type": "boolean", "default": true },
+      "maxResults": { "type": "number", "default": 5 },
+      "cleanupDays": { "type": "number", "default": 180 },
+      "recencyDecay": { "type": "boolean", "default": true },
+      "recencyHalfLife": { "type": "number", "default": 180 },
+      "smartDedup": { "type": "boolean", "default": true },
+      "dedupThreshold": { "type": "number", "default": 0.85 },
+      "coreKeywords": { "type": "array", "items": { "type": "string" } },
+      "noiseFilter": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "skipGreetings": { "type": "boolean" }, "skipCommands": { "type": "boolean" } } },
+      "adaptiveRetrieval": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "minQueryLength": { "type": "number" } } },
+      "sessionMemory": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "maxSessionItems": { "type": "number" } } },
+      "weibullDecay": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "shape": { "type": "number" }, "scale": { "type": "number" } } },
+      "scopes": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "defaultScope": { "type": "string" } } },
+      "mmr": { "type": "object", "description": "MMR 多样性去重", "properties": { "enabled": { "type": "boolean" }, "threshold": { "type": "number" } } },
+      "llm": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "provider": { "type": "string" }, "apiKey": { "type": "string" }, "model": { "type": "string" }, "baseURL": { "type": "string" } } },
+      "threshold": { "type": "object", "properties": { "useLlmForCore": { "type": "boolean" }, "useLlmForExtract": { "type": "boolean" }, "useLlmForDedup": { "type": "boolean" }, "minConfidence": { "type": "number" } } }
     }
   },
   "requirements": { "node": ">=18.0.0", "openclaw": ">=2026.2.0" }
