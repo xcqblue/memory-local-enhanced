@@ -2,7 +2,7 @@
   "id": "algo-memory",
   "name": "algo-memory",
   "description": "纯算法长期记忆插件 - 0 API，可选 LLM 增强",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "kind": "memory",
   "homepage": "https://github.com/xcqblue/algo-memory",
   "configSchema": {
@@ -18,14 +18,18 @@
       "smartDedup": { "type": "boolean", "default": true },
       "dedupThreshold": { "type": "number", "default": 0.85 },
       "coreKeywords": { "type": "array", "items": { "type": "string" } },
-      "noiseFilter": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "skipGreetings": { "type": "boolean" }, "skipCommands": { "type": "boolean" } } },
-      "adaptiveRetrieval": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "minQueryLength": { "type": "number" } } },
-      "sessionMemory": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "maxSessionItems": { "type": "number" } } },
-      "weibullDecay": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "shape": { "type": "number" }, "scale": { "type": "number" } } },
-      "scopes": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "defaultScope": { "type": "string" } } },
-      "mmr": { "type": "object", "description": "MMR 多样性去重", "properties": { "enabled": { "type": "boolean" }, "threshold": { "type": "number" } } },
-      "llm": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "provider": { "type": "string" }, "apiKey": { "type": "string" }, "model": { "type": "string" }, "baseURL": { "type": "string" } } },
-      "threshold": { "type": "object", "properties": { "useLlmForCore": { "type": "boolean" }, "useLlmForExtract": { "type": "boolean" }, "useLlmForDedup": { "type": "boolean" }, "minConfidence": { "type": "number" } } }
+      "noiseFilter": { "type": "object", "properties": { "enabled": {}, "skipGreetings": {}, "skipCommands": {} } },
+      "adaptiveRetrieval": { "type": "object", "description": "强制关键词 + CJK阈值", "properties": { "enabled": {}, "minQueryLength": {}, "forceKeywords": { "type": "array", "items": { "type": "string" } } } },
+      "sessionMemory": { "type": "object", "properties": { "enabled": {}, "maxSessionItems": {} } },
+      "weibullDecay": { "type": "object", "properties": { "enabled": {}, "shape": {}, "scale": {} } },
+      "reinforcement": { "type": "object", "description": "访问强化", "properties": { "enabled": {}, "factor": {}, "maxMultiplier": {} } },
+      "mmr": { "type": "object", "properties": { "enabled": {}, "threshold": {} } },
+      "lengthNorm": { "type": "object", "description": "长度归一化", "properties": { "enabled": {}, "anchor": {} } },
+      "hardMinScore": { "type": "object", "description": "硬最低分", "properties": { "enabled": {}, "threshold": {} } },
+      "tier": { "type": "object", "description": "三层晋升", "properties": { "enabled": {}, "coreThreshold": {}, "peripheralThreshold": {}, "ageDays": {} } },
+      "scopes": { "type": "object", "properties": { "enabled": {}, "defaultScope": {} } },
+      "llm": { "type": "object", "properties": { "enabled": {}, "provider": {}, "apiKey": {}, "model": {}, "baseURL": {} } },
+      "threshold": { "type": "object", "properties": { "useLlmForCore": {}, "useLlmForExtract": {}, "useLlmForDedup": {}, "minConfidence": {} } }
     }
   },
   "requirements": { "node": ">=18.0.0", "openclaw": ">=2026.2.0" }

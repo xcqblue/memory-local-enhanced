@@ -1,7 +1,7 @@
 /**
- * algo-memory v1.2.0
+ * algo-memory v1.3.0
  * 纯算法长期记忆插件 - 0 API / 可选 LLM 增强
- * 借鉴 memory-lancedb-pro 深度优化
+ * 借鉴 memory-lancedb-pro 完整进阶功能
  */
 
 import LRUCache from 'lru-cache';
@@ -21,12 +21,21 @@ interface Config {
   recencyHalfLife: number;
   smartDedup: boolean;
   dedupThreshold: number;
+  // 基础功能
   noiseFilter: { enabled: boolean; skipGreetings: boolean; skipCommands: boolean };
-  adaptiveRetrieval: { enabled: boolean; minQueryLength: number };
+  adaptiveRetrieval: { enabled: boolean; minQueryLength: number; forceKeywords: string[] };
   sessionMemory: { enabled: boolean; maxSessionItems: number };
+  // 进阶功能
   weibullDecay: { enabled: boolean; shape: number; scale: number };
+  reinforcement: { enabled: boolean; factor: number; maxMultiplier: number }; // 访问强化
+  mmr: { enabled: boolean; threshold: number }; // 多样性去重
+  lengthNorm: { enabled: boolean; anchor: number }; // 长度归一化
+  hardMinScore: { enabled: boolean; threshold: number }; // 硬最低分
+  // 三层晋升
+  tier: { enabled: boolean; coreThreshold: number; peripheralThreshold: number; ageDays: number };
+  // 多 Scope
   scopes: { enabled: boolean; defaultScope: string };
-  mmr: { enabled: boolean; threshold: number };  // MMR 多样性去重
+  // LLM
   llm: { enabled: boolean; provider: string; apiKey: string; model: string; baseURL: string };
   threshold: { useLlmForCore: boolean; useLlmForExtract: boolean; useLlmForDedup: boolean; minConfidence: number };
 }
@@ -41,12 +50,21 @@ const DEFAULT_CONFIG: Config = {
   recencyHalfLife: 180,
   smartDedup: true,
   dedupThreshold: 0.85,
+  // 基础
   noiseFilter: { enabled: true, skipGreetings: true, skipCommands: true },
-  adaptiveRetrieval: { enabled: true, minQueryLength: 2 },
+  adaptiveRetrieval: { enabled: true, minQueryLength: 2, forceKeywords: ['记住', '之前', '上次', '记得', 'remember', 'before', 'last'] },
   sessionMemory: { enabled: false, maxSessionItems: 10 },
+  // 进阶
   weibullDecay: { enabled: false, shape: 1.5, scale: 90 },
+  reinforcement: { enabled: false, factor: 0.5, maxMultiplier: 3 }, // 访问强化
+  mmr: { enabled: false, threshold: 0.85 },
+  lengthNorm: { enabled: false, anchor: 500 }, // 长度归一化
+  hardMinScore: { enabled: false, threshold: 0.35 }, // 硬最低分
+  // 三层晋升
+  tier: { enabled: false, coreThreshold: 10, peripheralThreshold: 0.15, ageDays: 60 },
+  // Scope
   scopes: { enabled: false, defaultScope: 'agent' },
-  mmr: { enabled: false, threshold: 0.85 },  // MMR
+  // LLM
   llm: { enabled: false, provider: 'openai', apiKey: '', model: 'gpt-4o-mini', baseURL: 'https://api.openai.com/v1' },
   threshold: { useLlmForCore: false, useLlmForExtract: false, useLlmForDedup: false, minConfidence: 0.8 }
 };
@@ -77,10 +95,20 @@ function isNoise(content: string, config: Config['noiseFilter']): boolean {
   return false;
 }
 
-// 自适应检索
+// CJK 字符检测 & 自适应检索 (含强制关键词)
 function shouldRetrieve(query: string, config: Config['adaptiveRetrieval']): boolean {
   if (!config.enabled) return true;
-  if (!query || query.trim().length < config.minQueryLength) return false;
+  if (!query || query.trim().length < 1) return false;
+  
+  // 强制检索关键词
+  const lowerQuery = query.toLowerCase();
+  if (config.forceKeywords?.some(k => lowerQuery.includes(k))) return true;
+  
+  // CJK 字符阈值 (中文 6, 英文 15)
+  const isCJK = /[\u4e00-\u9fa5]/.test(query);
+  const minLen = isCJK ? 6 : 15;
+  if (query.trim().length < minLen) return false;
+  
   return true;
 }
 
@@ -99,6 +127,20 @@ function weibullDecay(daysOld: number, shape: number, scale: number): number {
   return Math.exp(-Math.pow(daysOld / scale, shape));
 }
 
+// 长度归一化
+function lengthNorm(content: string, anchor: number): number {
+  const len = content.length;
+  if (len <= anchor) return 1.0;
+  return anchor / len;
+}
+
+// 访问强化 (reinforcement)
+function reinforcementFactor(accessCount: number, config: Config['reinforcement']): number {
+  if (!config.enabled || accessCount <= 1) return 1.0;
+  // 每次访问增加 factor，上限 maxMultiplier
+  return Math.min(config.maxMultiplier, 1.0 + (accessCount - 1) * config.factor);
+}
+
 // MMR 多样性去重
 function mmrDeduplicate(items: any[], config: Config['mmr']): any[] {
   if (!config.enabled || items.length <= 1) return items;
@@ -106,18 +148,14 @@ function mmrDeduplicate(items: any[], config: Config['mmr']): any[] {
   const scores = items.map((m, i) => ({ ...m, _originalIndex: i, _score: m._score || m.importance }));
   
   while (scores.length > 0) {
-    // 选择最高分
     scores.sort((a, b) => b._score - a._score);
     const top = scores.shift()!;
     result.push(top);
     
-    // 移除相似的
     const remaining: any[] = [];
     for (const item of scores) {
       const sim = jaccardSimilarity(top.content, item.content);
-      if (sim < config.threshold) {
-        remaining.push(item);
-      }
+      if (sim < config.threshold) remaining.push(item);
     }
     scores.length = 0;
     scores.push(...remaining);
@@ -125,15 +163,22 @@ function mmrDeduplicate(items: any[], config: Config['mmr']): any[] {
   return result;
 }
 
-// ============= LLM 客户端 =============
+// 三层晋升判断
+function getTier(importance: number, accessCount: number, daysOld: number, config: Config['tier']): 'core' | 'working' | 'peripheral' {
+  if (!config.enabled) return importance >= 1.0 ? 'core' : 'working';
+  
+  const compositeScore = importance * (1 + Math.log10(accessCount + 1));
+  
+  if (accessCount >= config.coreThreshold || compositeScore >= 0.7) return 'core';
+  if (compositeScore < config.peripheralThreshold || daysOld > config.ageDays) return 'peripheral';
+  return 'working';
+}
+
+// LLM 客户端
 class LLMClient {
   private config: Config['llm'];
   private log: any;
-
-  constructor(config: Config['llm'], log: any) {
-    this.config = config;
-    this.log = log;
-  }
+  constructor(config: Config['llm'], log: any) { this.config = config; this.log = log; }
 
   async isCoreMemory(content: string): Promise<{ isCore: boolean; confidence: number }> {
     const localResult = isCoreKeyword(content, DEFAULT_CONFIG.coreKeywords);
@@ -218,14 +263,14 @@ class MemoryPlugin {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, scope TEXT DEFAULT 'agent',
-        content TEXT NOT NULL, type TEXT DEFAULT 'other', layer TEXT DEFAULT 'general',
-        keywords TEXT, importance REAL DEFAULT 0.5, access_count INTEGER DEFAULT 0,
-        created_at INTEGER, last_accessed INTEGER, content_hash TEXT
+        content TEXT NOT NULL, type TEXT DEFAULT 'other', tier TEXT DEFAULT 'working',
+        layer TEXT DEFAULT 'general', keywords TEXT, importance REAL DEFAULT 0.5,
+        access_count INTEGER DEFAULT 0, created_at INTEGER, last_accessed INTEGER, content_hash TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_agent ON memories(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_tier ON memories(tier);
       CREATE INDEX IF NOT EXISTS idx_scope ON memories(scope);
       CREATE INDEX IF NOT EXISTS idx_agent_hash ON memories(agent_id, content_hash);
-      CREATE INDEX IF NOT EXISTS idx_layer ON memories(agent_id, layer);
     `);
     this.log.info('[algo-memory] 数据库初始化:', dbPath);
     this.cleanupInterval = setInterval(() => this.cleanup(), 24 * 60 * 60 * 1000);
@@ -243,6 +288,8 @@ class MemoryPlugin {
       if (existing) {
         this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(Date.now(), existing.id);
         this.cache.delete(`recall:${AgentId}`);
+        // 三层晋升检查
+        this.updateTier(existing.id);
         continue;
       }
 
@@ -275,27 +322,51 @@ class MemoryPlugin {
       if (this.config.threshold.useLlmForExtract && this.llmClient) keywords = await this.llmClient.extractKeywords(content);
 
       const scope = this.config.scopes.enabled ? `${this.config.scopes.defaultScope}:${AgentId}` : 'global';
-      const memory = { id: generateId(), agent_id: AgentId, scope, content, type: 'other', layer: isCore ? 'core' : 'general', keywords, importance, access_count: 1, created_at: Date.now(), last_accessed: Date.now(), content_hash: contentHash };
-      this.db.prepare('INSERT INTO memories (id, agent_id, scope, content, type, layer, keywords, importance, access_count, created_at, last_accessed, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(memory.id, memory.agent_id, memory.scope, memory.content, memory.type, memory.layer, memory.keywords, memory.importance, memory.access_count, memory.created_at, memory.last_accessed, memory.content_hash);
+      const tier = getTier(importance, 1, 0, this.config.tier);
+      const memory = { id: generateId(), agent_id: AgentId, scope, content, type: 'other', tier, layer: isCore ? 'core' : 'general', keywords, importance, access_count: 1, created_at: Date.now(), last_accessed: Date.now(), content_hash: contentHash };
+      this.db.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(memory.id, memory.agent_id, memory.scope, memory.content, memory.type, memory.tier, memory.layer, memory.keywords, memory.importance, memory.access_count, memory.created_at, memory.last_accessed, memory.content_hash);
     }
   }
 
+  // 三层晋升更新
+  private updateTier(memoryId: string): void {
+    if (!this.config.tier.enabled || !this.db) return;
+    const mem = this.db.prepare('SELECT importance, access_count, created_at FROM memories WHERE id = ?').get(memoryId) as { importance: number; access_count: number; created_at: number };
+    if (!mem) return;
+    const daysOld = (Date.now() - mem.created_at) / (1000 * 60 * 60 * 24);
+    const newTier = getTier(mem.importance, mem.access_count, daysOld, this.config.tier);
+    this.db.prepare('UPDATE memories SET tier = ? WHERE id = ?').run(newTier, memoryId);
+  }
+
   async recall(AgentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
+    // 自适应检索 (含强制关键词 + CJK阈值)
     if (!shouldRetrieve(query, this.config.adaptiveRetrieval)) return { hasMemory: false, memories: [] };
     const cacheKey = `recall:${AgentId}:${query}`;
     if (this.cache.has(cacheKey)) return this.cache.get(cacheKey)!;
 
-    let memories = this.db!.prepare("SELECT * FROM memories WHERE agent_id = ? ORDER BY CASE layer WHEN 'core' THEN 0 ELSE 1 END, importance DESC, access_count DESC LIMIT ?").all(AgentId, this.config.maxResults * 3) as any[];
+    let memories = this.db!.prepare("SELECT * FROM memories WHERE agent_id = ? ORDER BY CASE tier WHEN 'core' THEN 0 WHEN 'working' THEN 1 ELSE 2 END, importance DESC, access_count DESC LIMIT ?").all(AgentId, this.config.maxResults * 3) as any[];
 
     if (this.config.recencyDecay) {
       const halfLife = this.config.recencyHalfLife || 180;
       memories = memories.map(m => {
-        let score = (m.layer === 'core' ? 1.5 : 1.0) * m.importance * m.access_count;
+        const daysOld = (Date.now() - m.last_accessed) / (1000 * 60 * 60 * 24);
+        let score = (m.tier === 'core' ? 1.5 : m.tier === 'working' ? 1.0 : 0.5) * m.importance;
+        
+        // Weibull 衰减
         if (this.config.weibullDecay.enabled) {
-          score *= weibullDecay((Date.now() - m.last_accessed) / (1000 * 60 * 60 * 24), this.config.weibullDecay.shape, this.config.weibullDecay.scale);
+          score *= weibullDecay(daysOld, this.config.weibullDecay.shape, this.config.weibullDecay.scale);
         } else {
-          score *= (0.3 + 0.7 * Math.pow(0.5, (Date.now() - m.last_accessed) / (1000 * 60 * 60 * 24 * halfLife)));
+          score *= (0.3 + 0.7 * Math.pow(0.5, daysOld / halfLife));
         }
+        
+        // 访问强化
+        score *= reinforcementFactor(m.access_count, this.config.reinforcement);
+        
+        // 长度归一化
+        if (this.config.lengthNorm.enabled) {
+          score *= lengthNorm(m.content, this.config.lengthNorm.anchor);
+        }
+        
         return { ...m, _score: score };
       }).sort((a, b) => b._score - a._score);
     }
@@ -303,6 +374,11 @@ class MemoryPlugin {
     // MMR 多样性去重
     if (this.config.mmr.enabled) {
       memories = mmrDeduplicate(memories, this.config.mmr);
+    }
+
+    // 硬最低分过滤
+    if (this.config.hardMinScore.enabled) {
+      memories = memories.filter(m => (m._score || m.importance) >= this.config.hardMinScore.threshold);
     }
 
     const limited = memories.slice(0, this.config.maxResults);
@@ -325,37 +401,45 @@ class MemoryPlugin {
   cleanup(): void {
     if (!this.db) return;
     const cutoff = Date.now() - this.config.cleanupDays * 24 * 60 * 60 * 1000;
-    const result = this.db.prepare('DELETE FROM memories WHERE last_accessed < ? AND layer = "general"').run(cutoff);
+    const result = this.db.prepare('DELETE FROM memories WHERE last_accessed < ? AND layer = "general" AND tier = "peripheral"').run(cutoff);
     this.log.info('[algo-memory] 清理了', result.changes, '条过期记忆');
   }
 
   // 工具方法
-  listMemories(AgentId: string, limit: number = 20): any[] { return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?').all(AgentId, limit); }
+  listMemories(AgentId: string, limit: number = 20): any[] { return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY tier, importance DESC, created_at DESC LIMIT ?').all(AgentId, limit); }
   searchMemories(AgentId: string, query: string): any[] { const q = `%${query}%`; return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(AgentId, q, q); }
-  getStats(AgentId: string): { total: number; core: number; general: number; scopes: Record<string, number> } {
+  getStats(AgentId: string): { total: number; core: number; working: number; peripheral: number; general: number } {
     const total = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ?').get(AgentId) as { c: number }).c;
-    const core = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND layer = "core"').get(AgentId) as { c: number }).c;
+    const core = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND tier = "core"').get(AgentId) as { c: number }).c;
+    const working = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND tier = "working"').get(AgentId) as { c: number }).c;
+    const peripheral = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND tier = "peripheral"').get(AgentId) as { c: number }).c;
     const general = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND layer = "general"').get(AgentId) as { c: number }).c;
-    const scopes = this.db!.prepare('SELECT scope, COUNT(*) as c FROM memories WHERE agent_id = ? GROUP BY scope').all(AgentId) as { scope: string; c: number }[];
-    return { total, core, general, scopes: Object.fromEntries(scopes.map(s => [s.scope, s.c])) };
+    return { total, core, working, peripheral, general };
   }
   getMemory(AgentId: string, memoryId: string): any | null { return this.db!.prepare('SELECT * FROM memories WHERE id = ? AND agent_id = ?').get(memoryId, AgentId) || null; }
   deleteMemory(AgentId: string, memoryId: string): boolean { const r = this.db!.prepare('DELETE FROM memories WHERE id = ? AND agent_id = ?').run(memoryId, AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes > 0; }
   deleteBulk(AgentId: string, memoryIds: string[]): number { const placeholders = memoryIds.map(() => '?').join(','); const r = this.db!.prepare(`DELETE FROM memories WHERE id IN (${placeholders}) AND agent_id = ?`).run(...memoryIds, AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes; }
-  clearMemories(AgentId: string, keepCore: boolean = true): number { let r = keepCore ? this.db!.prepare('DELETE FROM memories WHERE agent_id = ? AND layer != "core"').run(AgentId) : this.db!.prepare('DELETE FROM memories WHERE agent_id = ?').run(AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes; }
-  updateMemory(AgentId: string, memoryId: string, content: string): boolean { const safe = content.replace(/</g, '&lt;').replace(/>/g, '&gt;'); const isCore = isCoreKeyword(safe, this.config.coreKeywords); const r = this.db!.prepare('UPDATE memories SET content = ?, layer = ?, keywords = ?, importance = ?, last_accessed = ? WHERE id = ? AND agent_id = ?').run(safe, isCore ? 'core' : 'general', extractKeywords(safe), isCore ? 1.0 : 0.5, Date.now(), memoryId, AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes > 0; }
+  clearMemories(AgentId: string, keepCore: boolean = true): number { let r = keepCore ? this.db!.prepare('DELETE FROM memories WHERE agent_id = ? AND tier != "core"').run(AgentId) : this.db!.prepare('DELETE FROM memories WHERE agent_id = ?').run(AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes; }
+  updateMemory(AgentId: string, memoryId: string, content: string): boolean { 
+    const safe = content.replace(/</g, '&lt;').replace(/>/g, '&gt;'); 
+    const isCore = isCoreKeyword(safe, this.config.coreKeywords);
+    const tier = getTier(isCore ? 1.0 : 0.5, 1, 0, this.config.tier);
+    const r = this.db!.prepare('UPDATE memories SET content = ?, tier = ?, layer = ?, keywords = ?, importance = ?, last_accessed = ? WHERE id = ? AND agent_id = ?').run(safe, tier, isCore ? 'core' : 'general', extractKeywords(safe), isCore ? 1.0 : 0.5, Date.now(), memoryId, AgentId); 
+    this.cache.delete(`recall:${AgentId}`); 
+    return r.changes > 0; 
+  }
   
-  // 导入/导出
   exportMemories(AgentId: string): any[] { return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ?').all(AgentId); }
   importMemories(AgentId: string, memories: any[]): number {
     let imported = 0;
     for (const m of memories) {
       try {
-        this.db!.prepare('INSERT INTO memories (id, agent_id, scope, content, type, layer, keywords, importance, access_count, created_at, last_accessed, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-          m.id || generateId(), AgentId, m.scope || 'global', m.content, m.type || 'other', m.layer || 'general', m.keywords || '', m.importance || 0.5, m.access_count || 1, m.created_at || Date.now(), m.last_accessed || Date.now(), m.content_hash || hashContent(m.content)
+        const tier = getTier(m.importance || 0.5, m.access_count || 1, 0, this.config.tier);
+        this.db!.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+          m.id || generateId(), AgentId, m.scope || 'global', m.content, m.type || 'other', tier, m.layer || 'general', m.keywords || '', m.importance || 0.5, m.access_count || 1, m.created_at || Date.now(), m.last_accessed || Date.now(), m.content_hash || hashContent(m.content)
         );
         imported++;
-      } catch (e) { /* 忽略重复 */ }
+      } catch (e) { /* ignore */ }
     }
     return imported;
   }
@@ -373,7 +457,7 @@ const algoMemoryPlugin = {
     const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
     plugin.init(stateDir);
 
-    // 工具注册 (10个 - 新增 export/import/bulk)
+    // 工具注册 (10个)
     const tools = [
       { name: 'memory_list', desc: '列出记忆', p: { agentId: 'string', limit: 'number' } },
       { name: 'memory_search', desc: '搜索记忆', p: { agentId: 'string', query: 'string' } },
@@ -432,7 +516,7 @@ const algoMemoryPlugin = {
 
     api.onDeactivate(() => plugin.close());
     const cfg = api.pluginConfig || {};
-    log.info(`[algo-memory] 插件注册完成, 工具数: ${tools.length}, MMR: ${cfg.mmr?.enabled}, 导入导出: 已支持`);
+    log.info(`[algo-memory] 插件注册完成, 工具数: ${tools.length}, 三层晋升: ${cfg.tier?.enabled}, 强化: ${cfg.reinforcement?.enabled}, CJK: 已支持`);
   }
 };
 
