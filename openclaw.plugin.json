@@ -4,6 +4,7 @@
   "description": "纯算法长期记忆插件 - 0 API / 可选 LLM 增强",
   "version": "1.0.0",
   "kind": "memory",
+  "homepage": "https://github.com/xcqblue/algo-memory",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -45,5 +46,18 @@
         "description": "自动识别为核心记忆的关键词"
       }
     }
+  },
+  "requirements": {
+    "node": ">=18.0.0",
+    "openclaw": ">=2026.2.0"
+  },
+  "setup": {
+    "notes": [
+      "安装后，在 ~/.openclaw/openclaw.json 中添加配置",
+      "将 algo-memory 添加到 plugins.allow 列表",
+      "设置 plugins.slots.memory = 'algo-memory' (如果要与 memos 共存，需要修改配置)",
+      "重启 Gateway: openclaw gateway restart",
+      "如果 better-sqlite3 编译失败，确保已安装 C++ 构建工具"
+    ]
   }
 }
