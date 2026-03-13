@@ -1212,6 +1212,7 @@ export class MemoryPlugin {
   }
 }
 
+
 // ============= OpenClaw 钩子 =============
 let memoryPlugin: MemoryPlugin;
 
@@ -1500,102 +1501,9 @@ export async function onload(context: any): Promise<void> {
   console.log('[Memory] algo-memory 插件加载完成');
 }
 
+
 export async function onunload(): Promise<void> {
   if (memoryPlugin) {
     memoryPlugin.close();
   }
 }
-
-  private async processAndStore(agentId: string, content: string): Promise<void> {
-    // 1. 分类
-    let type = ruleClassify(content);
-    let keywords = extractKeywords(content);
-    
-    // 2. LLM 增强 (可选)
-    if (this.config.llm.enabled && content.length > this.config.llm.thresholdLength) {
-      try {
-        const enhanced = await this.llmEnhance(content);
-        if (enhanced) {
-          if (enhanced.type) type = enhanced.type;
-          if (enhanced.keywords && enhanced.keywords !== '[]') keywords = enhanced.keywords;
-        }
-      } catch (error) {
-        console.error('[Memory] LLM 增强失败:', error);
-      }
-    }
-
-    // 3. XSS 转义
-    const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    
-    // 4. 哈希计算 (基于转义后的内容)
-    const contentHash = hashContent(safeContent);
-    
-    // 5. 哈希查重
-    const existing = this.db.prepare(
-      'SELECT id FROM memories WHERE agent_id = ? AND content_hash = ?'
-    ).get(agentId, contentHash) as { id: string } | undefined;
-
-    if (existing) {
-      this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(Date.now(), existing.id);
-      this.invalidateCache(agentId);
-      return;
-    }
-
-    // 6. 智能去重 (Jaccard)
-    const dedup = await this.smartDedup(agentId, safeContent);
-    
-    if (dedup.existingId) {
-      if (dedup.result === 'DUPLICATE') {
-        this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(Date.now(), dedup.existingId);
-        this.invalidateCache(agentId);
-        return;
-      } else if (dedup.result === 'UPDATE') {
-        const oldMemory = this.db.prepare('SELECT content, keywords FROM memories WHERE id = ?').get(dedup.existingId) as { content: string; keywords: string } | undefined;
-        if (oldMemory) {
-          const mergedContent = oldMemory.content + '\n' + safeContent;
-          const safeMerged = mergedContent.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-          const mergedKeywords = extractKeywords(safeMerged);
-          this.db.prepare('UPDATE memories SET content = ?, keywords = ?, access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(safeMerged, mergedKeywords, Date.now(), dedup.existingId);
-          this.invalidateCache(agentId);
-          return;
-        }
-      }
-    }
-    
-    // 7. 写入新记忆
-    const isCore = isCoreKeyword(content);
-    const layer: 'core' | 'general' = isCore ? 'core' : 'general';
-    const importance = isCore ? 1.0 : 0.5;
-    const safeKeywords = extractKeywords(safeContent);
-    
-    const memory: Memory = {
-      id: generateId(),
-      agent_id: agentId,
-      content: safeContent,
-      type,
-      layer,
-      keywords: safeKeywords,
-      importance,
-      access_count: 1,
-      created_at: Date.now(),
-      last_accessed: Date.now(),
-      content_hash: contentHash
-    };
-
-    const insertMemory = this.db.prepare(`
-      INSERT INTO memories (id, agent_id, content, type, layer, keywords, importance, access_count, created_at, last_accessed, content_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const transaction = this.db.transaction(() => {
-      insertMemory.run(
-        memory.id, memory.agent_id, memory.content, memory.type, memory.layer,
-        memory.keywords, memory.importance, memory.access_count,
-        memory.created_at, memory.last_accessed, memory.content_hash
-      );
-      this.db.prepare('INSERT INTO memories_fts (id, content, keywords) VALUES (?, ?, ?)').run(memory.id, safeContent, safeKeywords);
-    });
-    
-    transaction();
-    this.invalidateCache(agentId);
-  }
