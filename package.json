@@ -1,5 +1,5 @@
 {
-  "name": "memory-local-enhanced",
+  "name": "algo-memory",
   "version": "1.0.0",
   "description": "纯算法长期记忆插件 - 0 API / 可选 LLM 增强",
   "main": "src/index.js",
@@ -21,7 +21,7 @@
   "openclaw": {
     "plugins": {
       "slots": {
-        "memory": "memory-local-enhanced"
+        "memory": "algo-memory"
       }
     }
   }

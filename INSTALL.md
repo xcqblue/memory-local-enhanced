@@ -1,4 +1,4 @@
-# memory-local-enhanced 安装指南
+# algo-memory 安装指南
 
 ---
 
@@ -24,7 +24,7 @@ npm install better-sqlite3 lru-cache
 ```bash
 # 方式一：从 GitHub 克隆
 cd ~/.openclaw/plugins
-git clone https://github.com/xcqblue/memory-local-enhanced.git
+git clone https://github.com/xcqblue/algo-memory.git
 
 # 方式二：手动复制
 # 将下载的插件文件夹复制到 ~/.openclaw/plugins/
@@ -37,9 +37,9 @@ git clone https://github.com/xcqblue/memory-local-enhanced.git
 ```json
 {
   "plugins": {
-    "allow": ["memory-local-enhanced"],
+    "allow": ["algo-memory"],
     "entries": {
-      "memory-local-enhanced": {
+      "algo-memory": {
         "enabled": true,
         "config": {
           "autoCapture": true,
@@ -105,7 +105,7 @@ memory check-update
 # 编辑 openclaw.json，删除 plugins 配置
 
 # 2. 删除插件文件夹
-rm -rf ~/.openclaw/plugins/memory-local-enhanced
+rm -rf ~/.openclaw/plugins/algo-memory
 
 # 3. (可选) 删除数据
 rm -rf ~/.openclaw/memory-enhanced

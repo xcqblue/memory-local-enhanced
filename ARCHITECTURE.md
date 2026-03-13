@@ -1,4 +1,4 @@
-# 🏗️ memory-local-enhanced 架构设计
+# 🏗️ algo-memory 架构设计
 
 ---
 

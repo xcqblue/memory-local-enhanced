@@ -1,4 +1,4 @@
-# 🧠 memory-local-enhanced
+# 🧠 algo-memory
 
 纯算法长期记忆插件 - 0 API / 可选 LLM 增强
 
@@ -40,7 +40,7 @@ npm install better-sqlite3 lru-cache
 ```bash
 # 方式一：从 GitHub 克隆
 cd ~/.openclaw/plugins
-git clone https://github.com/xcqblue/memory-local-enhanced.git
+git clone https://github.com/xcqblue/algo-memory.git
 
 # 方式二：手动下载复制
 ```
@@ -52,9 +52,9 @@ git clone https://github.com/xcqblue/memory-local-enhanced.git
 ```json
 {
   "plugins": {
-    "allow": ["memory-local-enhanced"],
+    "allow": ["algo-memory"],
     "entries": {
-      "memory-local-enhanced": {
+      "algo-memory": {
         "enabled": true,
         "config": {
           "autoCapture": true,
@@ -109,7 +109,7 @@ memory cleanup
 ## 📁 文件结构
 
 ```
-memory-local-enhanced/
+algo-memory/
 ├── src/index.ts          # 主源码
 ├── ARCHITECTURE.md       # 架构设计
 ├── CONFIG.md            # 配置与API
@@ -121,7 +121,7 @@ memory-local-enhanced/
 
 ## 🔗 相关链接
 
-- GitHub: https://github.com/xcqblue/memory-local-enhanced
+- GitHub: https://github.com/xcqblue/algo-memory
 - OpenClaw: https://github.com/openclaw/openclaw
 
 ## 📄 License

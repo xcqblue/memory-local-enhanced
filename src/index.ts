@@ -1,5 +1,5 @@
 /**
- * memory-local-enhanced
+ * algo-memory
  * 纯算法长期记忆插件 - 0 API / 可选 LLM 增强
  */
 
@@ -87,8 +87,8 @@ interface RecallResult {
 }
 
 // ============= 工具函数 =============
-const GITHUB_REPO = 'xcqblue/memory-local-enhanced';
-const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/xcqblue/memory-local-enhanced/master';
+const GITHUB_REPO = 'xcqblue/algo-memory';
+const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/xcqblue/algo-memory/main';
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -1052,7 +1052,7 @@ export class MemoryPlugin {
       const newCode = await response.text();
       
       // 写入文件
-      const updatePath = path.join(process.cwd(), '.openclaw', 'plugins', 'memory-local-enhanced', 'src', 'index.ts');
+      const updatePath = path.join(process.cwd(), '.openclaw', 'plugins', 'algo-memory', 'src', 'index.ts');
       const dir = path.dirname(updatePath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -1086,7 +1086,7 @@ export class MemoryPlugin {
       const newCode = fs.readFileSync(filePath, 'utf8');
       
       // 写入插件目录
-      const updatePath = path.join(process.cwd(), '.openclaw', 'plugins', 'memory-local-enhanced', 'src', 'index.ts');
+      const updatePath = path.join(process.cwd(), '.openclaw', 'plugins', 'algo-memory', 'src', 'index.ts');
       const dir = path.dirname(updatePath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -1111,7 +1111,7 @@ export class MemoryPlugin {
 let memoryPlugin: MemoryPlugin;
 
 export async function onload(context: any): Promise<void> {
-  const config = context.config?.plugins?.entries?.['memory-local-enhanced']?.config || {};
+  const config = context.config?.plugins?.entries?.['algo-memory']?.config || {};
   
   memoryPlugin = new MemoryPlugin(config);
   await memoryPlugin.init();
@@ -1314,7 +1314,7 @@ export async function onload(context: any): Promise<void> {
     });
   }
 
-  console.log('[Memory] memory-local-enhanced 插件加载完成');
+  console.log('[Memory] algo-memory 插件加载完成');
 }
 
 export async function onunload(): Promise<void> {
