@@ -2,6 +2,13 @@
  * algo-memory
  * 纯算法长期记忆插件 - 0 API / 可选 LLM 增强
  * 遵循官方 OpenClaw register(api) 规范
+ * 
+ * 功能:
+ * - 自动存储/召回
+ * - 智能去重 (Jaccard)
+ * - 核心记忆识别
+ * - 时间衰减
+ * - 关键词搜索
  */
 
 import LRUCache from 'lru-cache';
@@ -19,6 +26,8 @@ interface Config {
   coreKeywords: string[];
   recencyDecay: boolean;
   recencyHalfLife: number;
+  smartDedup: boolean;
+  dedupThreshold: number;
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -32,7 +41,9 @@ const DEFAULT_CONFIG: Config = {
     'remember', 'important', 'never forget', 'always remember'
   ],
   recencyDecay: true,
-  recencyHalfLife: 180
+  recencyHalfLife: 180,
+  smartDedup: true,
+  dedupThreshold: 0.85
 };
 
 // ============= 工具函数 =============
@@ -65,6 +76,19 @@ function isNoise(content: string): boolean {
   return patterns.some(p => p.test(lower));
 }
 
+// Jaccard 相似度计算
+function jaccardSimilarity(text1: string, text2: string): number {
+  const words1 = new Set(text1.toLowerCase().match(/[\u4e00-\u9fa5a-zA-Z0-9]{2,}/g) || []);
+  const words2 = new Set(text2.toLowerCase().match(/[\u4e00-\u9fa5a-zA-Z0-9]{2,}/g) || []);
+  
+  if (words1.size === 0 || words2.size === 0) return 0;
+  
+  const intersection = new Set([...words1].filter(x => words2.has(x)));
+  const union = new Set([...words1, ...words2]);
+  
+  return intersection.size / union.size;
+}
+
 // ============= 核心类 =============
 class MemoryPlugin {
   private db: Database.Database | null = null;
@@ -89,6 +113,7 @@ class MemoryPlugin {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
 
+    // 建表 + FTS5 索引
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
@@ -105,7 +130,19 @@ class MemoryPlugin {
       );
       CREATE INDEX IF NOT EXISTS idx_agent ON memories(agent_id);
       CREATE INDEX IF NOT EXISTS idx_agent_hash ON memories(agent_id, content_hash);
+      CREATE INDEX IF NOT EXISTS idx_layer ON memories(agent_id, layer);
     `);
+
+    // FTS5 虚拟表 (如果不存在)
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+          content, keywords, content=memories, content_rowid=rowid
+        );
+      `);
+    } catch (e) {
+      // FTS 可能已存在
+    }
 
     this.log.info('[algo-memory] 数据库初始化完成:', dbPath);
     this.cleanupInterval = setInterval(() => this.cleanup(), 24 * 60 * 60 * 1000);
@@ -120,9 +157,10 @@ class MemoryPlugin {
       const content = msg.content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const contentHash = hashContent(content);
 
+      // 精确查重
       const existing = this.db.prepare(
-        'SELECT id FROM memories WHERE agent_id = ? AND content_hash = ?'
-      ).get(agentId, contentHash) as { id: string } | undefined;
+        'SELECT id, content FROM memories WHERE agent_id = ? AND content_hash = ?'
+      ).get(agentId, contentHash) as { id: string; content: string } | undefined;
 
       if (existing) {
         this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?')
@@ -131,6 +169,34 @@ class MemoryPlugin {
         continue;
       }
 
+      // 智能去重 (Jaccard)
+      if (this.config.smartDedup) {
+        const similar = this.db.prepare(
+          "SELECT id, content FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT 10"
+        ).all(agentId) as { id: string; content: string }[];
+
+        for (const s of similar) {
+          const score = jaccardSimilarity(content, s.content);
+          if (score >= 0.98) {
+            // 几乎相同 - 更新
+            this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?')
+              .run(Date.now(), s.id);
+            this.cache.delete(`recall:${agentId}`);
+            break;
+          } else if (score >= this.config.dedupThreshold) {
+            // 部分相似 - 合并内容
+            const newContent = s.content + ' ' + content;
+            const newKeywords = this.mergeKeywords(s.content, content);
+            this.db.prepare('UPDATE memories SET content = ?, keywords = ?, access_count = access_count + 1, last_accessed = ? WHERE id = ?')
+              .run(newContent, newKeywords, Date.now(), s.id);
+            this.cache.delete(`recall:${agentId}`);
+            break;
+          }
+        }
+        continue;
+      }
+
+      // 新增记录
       const isCore = isCoreKeyword(content, this.config.coreKeywords);
       const memory = {
         id: generateId(),
@@ -148,13 +214,20 @@ class MemoryPlugin {
 
       this.db.prepare(`
         INSERT INTO memories (id, agent_id, content, type, layer, keywords, importance, access_count, created_at, last_accessed, content_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         memory.id, memory.agent_id, memory.content, memory.type, memory.layer,
         memory.keywords, memory.importance, memory.access_count,
         memory.created_at, memory.last_accessed, memory.content_hash
       );
     }
+  }
+
+  private mergeKeywords(content1: string, content2: string): string {
+    const kw1 = (extractKeywords(content1) || '').split(',').filter(Boolean);
+    const kw2 = (extractKeywords(content2) || '').split(',').filter(Boolean);
+    const merged = [...new Set([...kw1, ...kw2])];
+    return merged.slice(0, 10).join(',');
   }
 
   async recall(agentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
@@ -187,6 +260,7 @@ class MemoryPlugin {
     this.log.info('[algo-memory] 清理了', result.changes, '条过期记忆');
   }
 
+  // 工具方法
   listMemories(agentId: string, limit: number = 20): any[] {
     return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?').all(agentId, limit);
   }
@@ -203,6 +277,41 @@ class MemoryPlugin {
     return { total: total.count, core: core.count, general: general.count };
   }
 
+  // 新增: 获取单条记忆
+  getMemory(agentId: string, memoryId: string): any | null {
+    return this.db!.prepare('SELECT * FROM memories WHERE id = ? AND agent_id = ?').get(memoryId, agentId) || null;
+  }
+
+  // 新增: 删除记忆
+  deleteMemory(agentId: string, memoryId: string): boolean {
+    const result = this.db!.prepare('DELETE FROM memories WHERE id = ? AND agent_id = ?').run(memoryId, agentId);
+    this.cache.delete(`recall:${agentId}`);
+    return result.changes > 0;
+  }
+
+  // 新增: 清空记忆
+  clearMemories(agentId: string, keepCore: boolean = true): number {
+    let result;
+    if (keepCore) {
+      result = this.db!.prepare('DELETE FROM memories WHERE agent_id = ? AND layer != "core"').run(agentId);
+    } else {
+      result = this.db!.prepare('DELETE FROM memories WHERE agent_id = ?').run(agentId);
+    }
+    this.cache.delete(`recall:${agentId}`);
+    return result.changes;
+  }
+
+  // 新增: 更新记忆
+  updateMemory(agentId: string, memoryId: string, content: string): boolean {
+    const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const isCore = isCoreKeyword(safeContent, this.config.coreKeywords);
+    const result = this.db!.prepare(
+      'UPDATE memories SET content = ?, layer = ?, keywords = ?, importance = ?, last_accessed = ? WHERE id = ? AND agent_id = ?'
+    ).run(safeContent, isCore ? 'core' : 'general', extractKeywords(safeContent), isCore ? 1.0 : 0.5, Date.now(), memoryId, agentId);
+    this.cache.delete(`recall:${agentId}`);
+    return result.changes > 0;
+  }
+
   close(): void {
     if (this.cleanupInterval) { clearInterval(this.cleanupInterval); this.cleanupInterval = null; }
     if (this.db) { this.db.close(); this.db = null; }
@@ -210,11 +319,11 @@ class MemoryPlugin {
   }
 }
 
-// ============= 插件定义 (官方格式) =============
+// ============= 插件定义 =============
 const algoMemoryPlugin = {
   id: 'algo-memory',
   name: 'algo-memory',
-  description: '纯算法长期记忆插件 - 0 API / 可选 LLM 增强',
+  description: '纯算法长期记忆插件 - 0 API / 智能去重 / 时间衰减',
   kind: 'memory' as const,
 
   register(api: any): void {
@@ -224,7 +333,7 @@ const algoMemoryPlugin = {
     const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
     plugin.init(stateDir);
 
-    // 注册工具 - memory_list
+    // 工具: memory_list
     api.registerTool({
       name: 'memory_list',
       label: 'Memory List',
@@ -248,7 +357,7 @@ const algoMemoryPlugin = {
       }
     });
 
-    // 注册工具 - memory_search
+    // 工具: memory_search
     api.registerTool({
       name: 'memory_search',
       label: 'Memory Search',
@@ -272,7 +381,7 @@ const algoMemoryPlugin = {
       }
     });
 
-    // 注册工具 - memory_stats
+    // 工具: memory_stats
     api.registerTool({
       name: 'memory_stats',
       label: 'Memory Stats',
@@ -295,21 +404,105 @@ const algoMemoryPlugin = {
       }
     });
 
-    // 事件钩子 - 参考官方
-    api.on('message_received', async (event: any, ctx: any) => {
-      // 收到消息时处理
+    // 工具: memory_get (新增)
+    api.registerTool({
+      name: 'memory_get',
+      label: 'Memory Get',
+      description: '获取单条记忆',
+      parameters: {
+        type: 'object',
+        properties: {
+          agentId: { type: 'string', description: 'Agent ID' },
+          memoryId: { type: 'string', description: '记忆 ID' }
+        },
+        required: ['agentId', 'memoryId']
+      },
+      async execute(_toolCallId: string, params: any) {
+        try {
+          const { agentId, memoryId } = params;
+          const memory = plugin.getMemory(agentId, memoryId);
+          return { content: [{ type: 'text', text: JSON.stringify(memory) }] };
+        } catch (err: any) {
+          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+        }
+      }
     });
 
-    api.on('before_message_write', async (event: any, ctx: any) => {
-      // 消息写入前处理
+    // 工具: memory_delete (新增)
+    api.registerTool({
+      name: 'memory_delete',
+      label: 'Memory Delete',
+      description: '删除记忆',
+      parameters: {
+        type: 'object',
+        properties: {
+          agentId: { type: 'string', description: 'Agent ID' },
+          memoryId: { type: 'string', description: '记忆 ID' }
+        },
+        required: ['agentId', 'memoryId']
+      },
+      async execute(_toolCallId: string, params: any) {
+        try {
+          const { agentId, memoryId } = params;
+          const deleted = plugin.deleteMemory(agentId, memoryId);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: deleted }) }] };
+        } catch (err: any) {
+          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+        }
+      }
     });
 
-    api.on('before_agent_start', async (event: any, ctx: any) => {
-      // Agent 启动前处理
+    // 工具: memory_clear (新增)
+    api.registerTool({
+      name: 'memory_clear',
+      label: 'Memory Clear',
+      description: '清空记忆',
+      parameters: {
+        type: 'object',
+        properties: {
+          agentId: { type: 'string', description: 'Agent ID' },
+          keepCore: { type: 'boolean', description: '是否保留核心记忆', default: true }
+        },
+        required: ['agentId']
+      },
+      async execute(_toolCallId: string, params: any) {
+        try {
+          const { agentId, keepCore = true } = params;
+          const count = plugin.clearMemories(agentId, keepCore);
+          return { content: [{ type: 'text', text: JSON.stringify({ deleted: count }) }] };
+        } catch (err: any) {
+          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+        }
+      }
     });
 
+    // 工具: memory_update (新增)
+    api.registerTool({
+      name: 'memory_update',
+      label: 'Memory Update',
+      description: '更新记忆',
+      parameters: {
+        type: 'object',
+        properties: {
+          agentId: { type: 'string', description: 'Agent ID' },
+          memoryId: { type: 'string', description: '记忆 ID' },
+          content: { type: 'string', description: '新内容' }
+        },
+        required: ['agentId', 'memoryId', 'content']
+      },
+      async execute(_toolCallId: string, params: any) {
+        try {
+          const { agentId, memoryId, content } = params;
+          const updated = plugin.updateMemory(agentId, memoryId, content);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: updated }) }] };
+        } catch (err: any) {
+          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+        }
+      }
+    });
+
+    // 事件钩子
     api.on('agent_end', async (event: any, ctx: any) => {
-      // Agent 结束时存储记忆
       const sessionKey = ctx.sessionKey || 'default';
       const messages = ctx.messages || [];
       if (DEFAULT_CONFIG.autoCapture && messages.length > 0) {
@@ -317,11 +510,6 @@ const algoMemoryPlugin = {
       }
     });
 
-    api.on('session_end', (_event: any, ctx: any) => {
-      // 会话结束时清理
-    });
-
-    // 对话钩子 - 兼容旧版
     api.onConversationTurn(async (messages: any[], sessionKey: string, owner: string) => {
       const agentId = sessionKey || 'default';
       if (DEFAULT_CONFIG.autoCapture) await plugin.store(agentId, messages);
@@ -334,10 +522,8 @@ const algoMemoryPlugin = {
       }
     });
 
-    // 关闭钩子
     api.onDeactivate(() => plugin.close());
-
-    log.info('[algo-memory] 插件注册完成');
+    log.info('[algo-memory] 插件注册完成, 工具数: 7');
   }
 };
 
