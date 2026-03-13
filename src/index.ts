@@ -131,6 +131,18 @@ function ruleClassify(content: string): Memory['type'] {
   return 'pattern';
 }
 
+// 自动判断 core 记忆 (根据关键词)
+function isCoreKeyword(content: string): boolean {
+  const lower = content.toLowerCase();
+  const coreKeywords = [
+    '记住', '牢记', '重要', '不要忘记', '记住它', 
+    '这是关键', '永久保留', '一直记住', '别忘了',
+    'remember', 'important', 'never forget', 'always remember',
+    '关键', '核心', '必须记住', '一定要记住'
+  ];
+  return coreKeywords.some(kw => lower.includes(kw));
+}
+
 // 关键词提取
 function extractKeywords(content: string): string {
   const words = content
@@ -288,14 +300,25 @@ export class MemoryPlugin {
       // 转义内容防止 XSS
       const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
       
+      // 关键词提取基于转义后的内容，确保搜索时能匹配
+      const safeKeywords = extractKeywords(safeContent);
+      
+      // 哈希基于转义后的内容，确保去重逻辑一致
+      const contentHash = hashContent(safeContent);
+      
+      // 自动判断是否为核心记忆 (根据关键词)
+      const isCore = isCoreKeyword(content);
+      const layer: 'core' | 'general' = isCore ? 'core' : 'general';
+      const importance = isCore ? 1.0 : 0.5;
+      
       const memory: Memory = {
         id: generateId(),
         agent_id: agentId,
         content: safeContent,
         type,
-        layer: 'general',
-        keywords,
-        importance: 0.5,
+        layer,
+        keywords: safeKeywords,
+        importance,
         access_count: 1,
         created_at: Date.now(),
         last_accessed: Date.now(),
@@ -645,6 +668,36 @@ export class MemoryPlugin {
     `).all(agentId, limit, offset) as Memory[];
   }
 
+  // 获取单条记忆详情
+  getMemoryDetail(memoryId: string): Memory | null {
+    if (!memoryId) return null;
+    const memory = this.db.prepare('SELECT * FROM memories WHERE id = ?').get(memoryId) as Memory | undefined;
+    return memory || null;
+  }
+
+  // 删除单条记忆
+  deleteMemory(memoryId: string): boolean {
+    if (!memoryId) return false;
+    
+    // 先查询获取 agent_id 用于清理缓存
+    const memory = this.db.prepare('SELECT agent_id FROM memories WHERE id = ?').get(memoryId) as { agent_id: string } | undefined;
+    if (!memory) return false;
+    
+    // 删除 FTS 索引
+    this.db.prepare('DELETE FROM memories_fts WHERE id = ?').run(memoryId);
+    
+    // 删除记忆
+    const result = this.db.prepare('DELETE FROM memories WHERE id = ?').run(memoryId);
+    
+    if (result.changes > 0) {
+      // 清理缓存
+      this.invalidateCache(memory.agent_id);
+      console.log(`[Memory] 已删除记忆 ${memoryId}`);
+      return true;
+    }
+    return false;
+  }
+
   // 搜索记忆 (FTS5)
   searchMemories(agentId: string, query: string, limit = 10): Memory[] {
     if (!agentId) return [];
@@ -928,7 +981,7 @@ export async function onload(context: any): Promise<void> {
       description: '记忆管理命令',
       commands: {
         list: {
-          description: '列出记忆',
+          description: '列出记忆 (带详细信息)',
           options: [
             { name: 'agent', alias: 'a', description: 'Agent ID' },
             { name: 'limit', alias: 'l', defaultValue: 20 }
@@ -938,7 +991,38 @@ export async function onload(context: any): Promise<void> {
               return { type: 'text', content: '错误: 请指定 agent ID (-a <agent-id>)' };
             }
             const memories = memoryPlugin.listMemories(opts.agent, opts.limit || 20);
-            return { type: 'text', content: JSON.stringify(memories, null, 2) };
+            // 格式化输出
+            const output = memories.map(m => 
+              `[${m.layer.toUpperCase()}] ${m.id}\n  内容: ${m.content}\n  类型: ${m.type} | 访问: ${m.access_count}次 | 创建: ${new Date(m.created_at).toLocaleString()}\n`
+            ).join('\n');
+            return { type: 'text', content: output || '暂无记忆' };
+          }
+        },
+        'get-detail': {
+          description: '查看单条记忆详情',
+          options: [
+            { name: 'id', alias: 'i', required: true, description: '记忆 ID' }
+          ],
+          execute: async (opts: any) => {
+            if (!opts.id) {
+              return { type: 'text', content: '错误: 请指定记忆 ID (-i <memory-id>)' };
+            }
+            const memory = memoryPlugin.getMemoryDetail(opts.id);
+            if (!memory) {
+              return { type: 'text', content: '记忆不存在' };
+            }
+            const output = `记忆详情:
+  ID: ${memory.id}
+  Agent: ${memory.agent_id}
+  内容: ${memory.content}
+  类型: ${memory.type}
+  层级: ${memory.layer}
+  关键词: ${memory.keywords}
+  重要性: ${memory.importance}
+  访问次数: ${memory.access_count}
+  创建时间: ${new Date(memory.created_at).toLocaleString()}
+  最后访问: ${new Date(memory.last_accessed).toLocaleString()}`;
+            return { type: 'text', content: output };
           }
         },
         search: {
@@ -974,8 +1058,24 @@ export async function onload(context: any): Promise<void> {
             if (!opts.agent) {
               return { type: 'text', content: '错误: 请指定 agent ID (-a <agent-id>)' };
             }
-            await memoryPlugin.deleteAgent(opts.agent);
-            return { type: 'text', content: `已删除 Agent ${opts.agent} 的所有记忆` };
+            const count = await memoryPlugin.deleteAgent(opts.agent);
+            return { type: 'text', content: `已删除 Agent ${opts.agent} 的 ${count} 条记忆` };
+          }
+        },
+        'delete-memory': {
+          description: '删除单条记忆',
+          options: [
+            { name: 'id', alias: 'i', required: true, description: '记忆 ID' }
+          ],
+          execute: async (opts: any) => {
+            if (!opts.id) {
+              return { type: 'text', content: '错误: 请指定记忆 ID (-i <memory-id>)' };
+            }
+            const result = memoryPlugin.deleteMemory(opts.id);
+            if (result) {
+              return { type: 'text', content: `已删除记忆 ${opts.id}` };
+            }
+            return { type: 'text', content: `删除失败: 记忆不存在` };
           }
         },
         cleanup: {

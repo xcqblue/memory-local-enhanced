@@ -10,6 +10,7 @@
 - ✅ Agent 独立记忆 (每个 Agent 有自己的记忆空间)
 - ✅ 6 类分类 (preference/fact/event/entity/case/pattern)
 - ✅ 两层分层 (core 重要记忆 / general 普通记忆)
+- ✅ 自动识别核心记忆 (根据关键词: 记住/重要/关键等)
 - ✅ FTS5 全文搜索
 - ✅ LRU 缓存加速 (5分钟 TTL)
 - ✅ 哈希去重 (SHA256)
@@ -408,6 +409,53 @@ await memory.updateFromFile('/path/to/index.ts');
 // 关闭
 memory.close();
 ```
+
+---
+
+## 🏷️ 核心记忆 (Core) 自动识别
+
+记忆分为两层：`core` (核心) 和 `general` (普通)
+
+### 自动识别规则
+
+系统会根据内容关键词自动判断是否为核心记忆：
+
+| 关键词 | 说明 |
+|--------|------|
+| 记住、牢记 | 用户要求记住 |
+| 重要、关键 | 用户强调重要性 |
+| 不要忘记、别忘了 | 用户提醒不要忘 |
+| 永久保留、一直记住 | 用户希望长期保存 |
+| remember、important、never forget | 英文关键词 |
+
+### 识别示例
+
+```
+"请记住我的名字是张三" → core (包含"记住")
+"这是我最重要的信息" → core (包含"重要")
+"一直记住这个习惯" → core (包含"记住")
+"我喜欢蓝色" → general (普通偏好)
+```
+
+### 手动设置
+
+也可以手动设置核心记忆：
+
+```typescript
+// 直接创建核心记忆
+await memory.setCoreMemory(agentId, content, 'fact');
+
+// 标记现有记忆为核心
+await memory.markAsCore(memoryId);
+
+// 手动升级
+await memory.promoteToCore(agentId, memoryId);
+```
+
+### 清理策略
+
+- **core**: 永久保留，不会被清理
+- **general**: 90 天后自动清理 (可配置)
 
 ---
 
