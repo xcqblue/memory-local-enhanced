@@ -11,6 +11,8 @@
 - ✅ 6 类分类 (preference/fact/event/entity/case/pattern)
 - ✅ 两层分层 (core 重要记忆 / general 普通记忆)
 - ✅ 自动识别核心记忆 (根据关键词: 记住/重要/关键等)
+- ✅ **智能去重 (Jaccard 算法)** - 自动合并相似内容
+- ✅ **时间衰减** - 近期记忆权重更高 (默认 90 天半衰期)
 - ✅ FTS5 全文搜索
 - ✅ LRU 缓存加速 (5分钟 TTL)
 - ✅ 哈希去重 (SHA256)
@@ -19,11 +21,12 @@
 - ✅ 可选 LLM 增强 (MiniMax/OpenAI/Claude/DeepSeek/Ollama)
 - ✅ 删除 Agent 时自动清理记忆和 FTS 索引
 - ✅ 定时自动清理过期记忆 (默认 90 天)
-- ✅ CLI 命令管理
+- ✅ CLI 命令管理 (15 个命令)
 - ✅ GitHub 在线更新
 - ✅ 本地文件更新
 - ✅ 版本管理 (日期格式 YYYYMMDD)
 - ✅ XSS 安全防护
+- ✅ 公共记忆 (可选，多 Agent 共享)
 
 ---
 
