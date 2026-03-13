@@ -1,14 +1,7 @@
 /**
  * algo-memory
  * 纯算法长期记忆插件 - 0 API / 可选 LLM 增强
- * 遵循官方 OpenClaw register(api) 规范
- * 
- * 功能:
- * - 自动存储/召回
- * - 智能去重 (Jaccard)
- * - 核心记忆识别
- * - 时间衰减
- * - LLM 阈值介入 (可选)
+ * 借鉴 memory-lancedb-pro 优化
  */
 
 import LRUCache from 'lru-cache';
@@ -28,7 +21,34 @@ interface Config {
   recencyHalfLife: number;
   smartDedup: boolean;
   dedupThreshold: number;
-  // LLM 配置 (可选)
+  // 噪声过滤
+  noiseFilter: {
+    enabled: boolean;
+    skipGreetings: boolean;
+    skipCommands: boolean;
+  };
+  // 自适应检索
+  adaptiveRetrieval: {
+    enabled: boolean;
+    minQueryLength: number;
+  };
+  // Session 记忆
+  sessionMemory: {
+    enabled: boolean;
+    maxSessionItems: number;
+  };
+  // Weibull 衰减
+  weibullDecay: {
+    enabled: boolean;
+    shape: number;
+    scale: number;
+  };
+  // 多 Scope 隔离
+  scopes: {
+    enabled: boolean;
+    defaultScope: string;
+  };
+  // LLM 配置
   llm: {
     enabled: boolean;
     provider: string;
@@ -36,7 +56,7 @@ interface Config {
     model: string;
     baseURL: string;
   };
-  // LLM 阈值配置
+  // 阈值配置
   threshold: {
     useLlmForCore: boolean;
     useLlmForExtract: boolean;
@@ -59,7 +79,34 @@ const DEFAULT_CONFIG: Config = {
   recencyHalfLife: 180,
   smartDedup: true,
   dedupThreshold: 0.85,
-  // LLM 默认关闭
+  // 噪声过滤
+  noiseFilter: {
+    enabled: true,
+    skipGreetings: true,
+    skipCommands: true
+  },
+  // 自适应检索
+  adaptiveRetrieval: {
+    enabled: true,
+    minQueryLength: 2
+  },
+  // Session 记忆
+  sessionMemory: {
+    enabled: false,
+    maxSessionItems: 10
+  },
+  // Weibull 衰减
+  weibullDecay: {
+    enabled: false,
+    shape: 1.5,
+    scale: 90
+  },
+  // 多 Scope 隔离
+  scopes: {
+    enabled: false,
+    defaultScope: 'agent'
+  },
+  // LLM
   llm: {
     enabled: false,
     provider: 'openai',
@@ -67,7 +114,7 @@ const DEFAULT_CONFIG: Config = {
     model: 'gpt-4o-mini',
     baseURL: 'https://api.openai.com/v1'
   },
-  // 阈值默认开启本地判断
+  // 阈值
   threshold: {
     useLlmForCore: false,
     useLlmForExtract: false,
@@ -94,19 +141,47 @@ function isCoreKeyword(content: string, keywords: string[]): boolean {
   return keywords.some(k => content.includes(k));
 }
 
-function isNoise(content: string): boolean {
+// 噪声过滤 (借鉴 memory-lancedb-pro)
+function isNoise(content: string, config: Config['noiseFilter']): boolean {
+  if (!config.enabled) return false;
   const lower = content.toLowerCase().trim();
-  const patterns = [
-    /^hi|^hello|^hey/i,
-    /^好的|^收到|^了解|^ok|^okay|^好滴|^明白了/i,
-    /^(thanks|thank you)/i,
-    /^[\s]*$/,
-    /^[\.。!?！?]+$/
-  ];
-  return patterns.some(p => p.test(lower));
+  
+  // 问候语
+  if (config.skipGreetings) {
+    const greetings = ['hi', 'hello', 'hey', '你好', '您好', '嗨', 'hey'];
+    if (greetings.some(g => lower === g || lower.startsWith(g + ' '))) return true;
+  }
+  
+  // 命令
+  if (config.skipCommands) {
+    if (lower.startsWith('/') || lower.startsWith('!') || lower.startsWith('-')) return true;
+  }
+  
+  // 简单确认
+  const confirms = ['ok', 'okay', '好', '好的', '收到', '了解', '明白', 'yes', 'no', '嗯', '哦'];
+  if (confirms.includes(lower)) return true;
+  
+  // 空内容
+  if (!lower || /^[.。!?！?\s]+$/.test(lower)) return true;
+  
+  return false;
 }
 
-// Jaccard 相似度计算
+// 自适应检索判断
+function shouldRetrieve(query: string, config: Config['adaptiveRetrieval']): boolean {
+  if (!config.enabled) return true;
+  if (!query || query.trim().length < config.minQueryLength) return false;
+  
+  // 特殊词不检索
+  const skipWords = ['什么是', '怎么', '如何', '为什么'];
+  for (const w of skipWords) {
+    if (query.includes(w)) return true;
+  }
+  
+  return true;
+}
+
+// Jaccard 相似度
 function jaccardSimilarity(text1: string, text2: string): number {
   const words1 = new Set(text1.toLowerCase().match(/[\u4e00-\u9fa5a-zA-Z0-9]{2,}/g) || []);
   const words2 = new Set(text2.toLowerCase().match(/[\u4e00-\u9fa5a-zA-Z0-9]{2,}/g) || []);
@@ -114,6 +189,11 @@ function jaccardSimilarity(text1: string, text2: string): number {
   const intersection = new Set([...words1].filter(x => words2.has(x)));
   const union = new Set([...words1, ...words2]);
   return intersection.size / union.size;
+}
+
+// Weibull 衰减 (借鉴 memory-lancedb-pro)
+function weibullDecay(daysOld: number, shape: number, scale: number): number {
+  return Math.exp(-Math.pow(daysOld / scale, shape));
 }
 
 // ============= LLM 客户端 =============
@@ -126,20 +206,11 @@ class LLMClient {
     this.log = log;
   }
 
-  // 判断是否为核心记忆 (可选 LLM)
   async isCoreMemory(content: string): Promise<{ isCore: boolean; confidence: number }> {
-    // 本地判断
     const localResult = isCoreKeyword(content, DEFAULT_CONFIG.coreKeywords);
-    if (localResult) {
-      return { isCore: true, confidence: 1.0 };
-    }
+    if (localResult) return { isCore: true, confidence: 1.0 };
+    if (!this.config.enabled) return { isCore: false, confidence: 0.5 };
 
-    // 如果未启用 LLM，返回本地结果
-    if (!this.config.enabled) {
-      return { isCore: false, confidence: 0.5 };
-    }
-
-    // LLM 判断
     try {
       const response = await fetch(`${this.config.baseURL}/chat/completions`, {
         method: 'POST',
@@ -151,36 +222,24 @@ class LLMClient {
           model: this.config.model,
           messages: [{
             role: 'system',
-            content: '判断用户输入是否包含重要信息需要长期记住。回复JSON: {"isCore": true/false, "confidence": 0-1}'
-          }, {
-            role: 'user',
-            content: content
-          }],
+            content: '判断是否重要需要长期记住。回复JSON: {"isCore": true/false, "confidence": 0-1}'
+          }, { role: 'user', content }],
           max_tokens: 100,
           temperature: 0.1
         })
       });
-
       const data = await response.json();
-      const result = JSON.parse(data.choices[0].message.content);
-      return result;
+      return JSON.parse(data.choices[0].message.content);
     } catch (err) {
-      this.log.error('[algo-memory] LLM调用失败:', err);
+      this.log.error('[algo-memory] LLM错误:', err);
       return { isCore: false, confidence: 0.5 };
     }
   }
 
-  // 提取关键词 (可选 LLM)
   async extractKeywords(content: string): Promise<string> {
-    // 本地提取
     const localKeywords = extractKeywords(content);
+    if (!this.config.enabled) return localKeywords;
 
-    // 如果未启用 LLM，返回本地结果
-    if (!this.config.enabled) {
-      return localKeywords;
-    }
-
-    // LLM 提取
     try {
       const response = await fetch(`${this.config.baseURL}/chat/completions`, {
         method: 'POST',
@@ -192,39 +251,28 @@ class LLMClient {
           model: this.config.model,
           messages: [{
             role: 'system',
-            content: '提取关键信息作为关键词，用逗号分隔，最多10个。回复JSON: {"keywords": ["关键词1", "关键词2"]}'
-          }, {
-            role: 'user',
-            content: content
-          }],
+            content: '提取关键词，最多10个。回复JSON: {"keywords": ["k1", "k2"]}'
+          }, { role: 'user', content }],
           max_tokens: 200,
           temperature: 0.2
         })
       });
-
       const data = await response.json();
       const result = JSON.parse(data.choices[0].message.content);
       return result.keywords.join(',');
     } catch (err) {
-      this.log.error('[algo-memory] LLM关键词提取失败:', err);
+      this.log.error('[algo-memory] LLM错误:', err);
       return localKeywords;
     }
   }
 
-  // 判断是否重复 (可选 LLM)
   async isDuplicate(content1: string, content2: string): Promise<{ isDuplicate: boolean; similarity: number }> {
-    // 本地判断
     const localSimilarity = jaccardSimilarity(content1, content2);
     if (localSimilarity >= 0.98 || localSimilarity < 0.5) {
       return { isDuplicate: localSimilarity >= 0.98, similarity: localSimilarity };
     }
+    if (!this.config.enabled) return { isDuplicate: false, similarity: localSimilarity };
 
-    // 如果未启用 LLM，返回本地结果
-    if (!this.config.enabled) {
-      return { isDuplicate: false, similarity: localSimilarity };
-    }
-
-    // LLM 判断
     try {
       const response = await fetch(`${this.config.baseURL}/chat/completions`, {
         method: 'POST',
@@ -236,20 +284,15 @@ class LLMClient {
           model: this.config.model,
           messages: [{
             role: 'system',
-            content: '判断两段内容是否重复/相似。回复JSON: {"isDuplicate": true/false, "similarity": 0-1}'
-          }, {
-            role: 'user',
-            content: `内容1: ${content1}\n内容2: ${content2}`
-          }],
+            content: '判断是否重复。回复JSON: {"isDuplicate": true/false, "similarity": 0-1}'
+          }, { role: 'user', content: `内容1: ${content1}\n内容2: ${content2}` }],
           max_tokens: 100,
           temperature: 0.1
         })
       });
-
       const data = await response.json();
       return JSON.parse(data.choices[0].message.content);
     } catch (err) {
-      this.log.error('[algo-memory] LLM去重判断失败:', err);
       return { isDuplicate: localSimilarity >= 0.85, similarity: localSimilarity };
     }
   }
@@ -259,6 +302,7 @@ class LLMClient {
 class MemoryPlugin {
   private db: Database.Database | null = null;
   private cache: LRUCache<string, any>;
+  private sessionCache: LRUCache<string, any>;
   private cleanupInterval: NodeJS.Timeout | null = null;
   private config: Config;
   private llmClient: LLMClient | null = null;
@@ -268,8 +312,8 @@ class MemoryPlugin {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.log = log;
     this.cache = new LRUCache({ max: 100, ttl: 5 * 60 * 1000 });
+    this.sessionCache = new LRUCache({ max: 50, ttl: 30 * 60 * 1000 });
     
-    // 初始化 LLM 客户端
     if (this.config.llm.enabled) {
       this.llmClient = new LLMClient(this.config.llm, log);
     }
@@ -289,6 +333,7 @@ class MemoryPlugin {
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
+        scope TEXT DEFAULT 'agent',
         content TEXT NOT NULL,
         type TEXT DEFAULT 'other',
         layer TEXT DEFAULT 'general',
@@ -300,11 +345,12 @@ class MemoryPlugin {
         content_hash TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_agent ON memories(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_scope ON memories(scope);
       CREATE INDEX IF NOT EXISTS idx_agent_hash ON memories(agent_id, content_hash);
       CREATE INDEX IF NOT EXISTS idx_layer ON memories(agent_id, layer);
     `);
 
-    this.log.info('[algo-memory] 数据库初始化完成:', dbPath);
+    this.log.info('[algo-memory] 数据库初始化:', dbPath);
     this.cleanupInterval = setInterval(() => this.cleanup(), 24 * 60 * 60 * 1000);
   }
 
@@ -312,7 +358,10 @@ class MemoryPlugin {
     if (!AgentId || !messages?.length || !this.db) return;
 
     for (const msg of messages) {
-      if (msg.role !== 'user' || isNoise(msg.content)) continue;
+      if (msg.role !== 'user') continue;
+      
+      // 噪声过滤
+      if (isNoise(msg.content, this.config.noiseFilter)) continue;
 
       const content = msg.content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const contentHash = hashContent(content);
@@ -329,14 +378,13 @@ class MemoryPlugin {
         continue;
       }
 
-      // 智能去重 (可选 LLM)
+      // 智能去重
       if (this.config.smartDedup) {
         const similar = this.db.prepare(
           "SELECT id, content FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT 10"
         ).all(AgentId) as { id: string; content: string }[];
 
         for (const s of similar) {
-          // 使用 LLM 判断或本地判断
           let isDup = false;
           let score = jaccardSimilarity(content, s.content);
           
@@ -358,7 +406,7 @@ class MemoryPlugin {
         continue;
       }
 
-      // 判断是否核心记忆 (可选 LLM)
+      // 判断核心
       let isCore = isCoreKeyword(content, this.config.coreKeywords);
       let keywords = extractKeywords(content);
       let importance = isCore ? 1.0 : 0.5;
@@ -369,15 +417,16 @@ class MemoryPlugin {
         importance = llmResult.confidence;
       }
 
-      // 提取关键词 (可选 LLM)
       if (this.config.threshold.useLlmForExtract && this.llmClient) {
         keywords = await this.llmClient.extractKeywords(content);
       }
 
-      // 写入数据库
+      // 写入
+      const scope = this.config.scopes.enabled ? `${this.config.scopes.defaultScope}:${AgentId}` : 'global';
       const memory = {
         id: generateId(),
         agent_id: AgentId,
+        scope,
         content,
         type: 'other',
         layer: isCore ? 'core' : 'general',
@@ -390,10 +439,10 @@ class MemoryPlugin {
       };
 
       this.db.prepare(`
-        INSERT INTO memories (id, agent_id, content, type, layer, keywords, importance, access_count, created_at, last_accessed, content_hash)
+        INSERT INTO memories (id, agent_id, scope, content, type, layer, keywords, importance, access_count, created_at, last_accessed, content_hash)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        memory.id, memory.agent_id, memory.content, memory.type, memory.layer,
+        memory.id, memory.agent_id, memory.scope, memory.content, memory.type, memory.layer,
         memory.keywords, memory.importance, memory.access_count,
         memory.created_at, memory.last_accessed, memory.content_hash
       );
@@ -401,6 +450,11 @@ class MemoryPlugin {
   }
 
   async recall(AgentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
+    // 自适应检索
+    if (!shouldRetrieve(query, this.config.adaptiveRetrieval)) {
+      return { hasMemory: false, memories: [] };
+    }
+
     const cacheKey = `recall:${AgentId}:${query}`;
     if (this.cache.has(cacheKey)) return this.cache.get(cacheKey)!;
 
@@ -410,17 +464,41 @@ class MemoryPlugin {
 
     if (this.config.recencyDecay) {
       const halfLife = this.config.recencyHalfLife || 180;
-      memories = memories.map(m => ({
-        ...m,
-        _score: (m.layer === 'core' ? 1.5 : 1.0) * m.importance * m.access_count *
-          (0.3 + 0.7 * Math.pow(0.5, (Date.now() - m.last_accessed) / (1000 * 60 * 60 * 24 * halfLife)))
-      })).sort((a: any, b: any) => b._score - a._score);
+      memories = memories.map(m => {
+        let score = (m.layer === 'core' ? 1.5 : 1.0) * m.importance * m.access_count;
+        
+        // Weibull 衰减
+        if (this.config.weibullDecay.enabled) {
+          const daysOld = (Date.now() - m.last_accessed) / (1000 * 60 * 60 * 24);
+          score *= weibullDecay(daysOld, this.config.weibullDecay.shape, this.config.weibullDecay.scale);
+        } else {
+          score *= (0.3 + 0.7 * Math.pow(0.5, (Date.now() - m.last_accessed) / (1000 * 60 * 60 * 24 * halfLife)));
+        }
+        return { ...m, _score: score };
+      }).sort((a: any, b: any) => b._score - a._score);
     }
 
     const limited = memories.slice(0, this.config.maxResults);
     const result = { hasMemory: limited.length > 0, memories: limited };
     this.cache.set(cacheKey, result);
     return result;
+  }
+
+  // Session 记忆
+  addSessionMemory(AgentId: string, content: string): void {
+    if (!this.config.sessionMemory.enabled) return;
+    const key = `session:${AgentId}`;
+    const session = this.sessionCache.get(key) || [];
+    session.unshift({ content, time: Date.now() });
+    if (session.length > this.config.sessionMemory.maxSessionItems) {
+      session.pop();
+    }
+    this.sessionCache.set(key, session);
+  }
+
+  getSessionMemory(AgentId: string): any[] {
+    if (!this.config.sessionMemory.enabled) return [];
+    return this.sessionCache.get(`session:${AgentId}`) || [];
   }
 
   cleanup(): void {
@@ -499,172 +577,45 @@ const algoMemoryPlugin = {
     const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
     plugin.init(stateDir);
 
-    // 工具: memory_list
-    api.registerTool({
-      name: 'memory_list',
-      label: 'Memory List',
-      description: '列出某Agent的记忆',
-      parameters: {
-        type: 'object',
-        properties: {
-          agentId: { type: 'string', description: 'Agent ID' },
-          limit: { type: 'number', description: '返回数量限制' }
-        },
-        required: ['agentId']
-      },
-      async execute(_toolCallId: string, params: any) {
-        try {
-          const { agentId, limit = 20 } = params;
-          const memories = plugin.listMemories(agentId, limit);
-          return { content: [{ type: 'text', text: JSON.stringify(memories) }] };
-        } catch (err: any) {
-          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
-        }
-      }
-    });
+    // 工具注册 (7个)
+    const tools = [
+      { name: 'memory_list', label: 'Memory List', desc: '列出记忆', params: { agentId: 'string', limit: 'number' } },
+      { name: 'memory_search', label: 'Memory Search', desc: '搜索记忆', params: { agentId: 'string', query: 'string' } },
+      { name: 'memory_stats', label: 'Memory Stats', desc: '查看统计', params: { agentId: 'string' } },
+      { name: 'memory_get', label: 'Memory Get', desc: '获取单条', params: { agentId: 'string', memoryId: 'string' } },
+      { name: 'memory_delete', label: 'Memory Delete', desc: '删除记忆', params: { agentId: 'string', memoryId: 'string' } },
+      { name: 'memory_clear', label: 'Memory Clear', desc: '清空记忆', params: { agentId: 'string', keepCore: 'boolean' } },
+      { name: 'memory_update', label: 'Memory Update', desc: '更新记忆', params: { agentId: 'string', memoryId: 'string', content: 'string' } }
+    ];
 
-    // 工具: memory_search
-    api.registerTool({
-      name: 'memory_search',
-      label: 'Memory Search',
-      description: '搜索记忆',
-      parameters: {
-        type: 'object',
-        properties: {
-          agentId: { type: 'string', description: 'Agent ID' },
-          query: { type: 'string', description: '搜索关键词' }
+    tools.forEach(tool => {
+      api.registerTool({
+        name: tool.name,
+        label: tool.label,
+        description: tool.desc,
+        parameters: {
+          type: 'object',
+          properties: tool.params,
+          required: Object.keys(tool.params)
         },
-        required: ['agentId', 'query']
-      },
-      async execute(_toolCallId: string, params: any) {
-        try {
-          const { agentId, query } = params;
-          const memories = plugin.searchMemories(agentId, query);
-          return { content: [{ type: 'text', text: JSON.stringify(memories) }] };
-        } catch (err: any) {
-          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+        async execute(_toolCallId: string, params: any) {
+          try {
+            let result;
+            switch (tool.name) {
+              case 'memory_list': result = plugin.listMemories(params.agentId, params.limit || 20); break;
+              case 'memory_search': result = plugin.searchMemories(params.agentId, params.query); break;
+              case 'memory_stats': result = plugin.getStats(params.agentId); break;
+              case 'memory_get': result = plugin.getMemory(params.agentId, params.memoryId); break;
+              case 'memory_delete': result = { success: plugin.deleteMemory(params.agentId, params.memoryId) }; break;
+              case 'memory_clear': result = { deleted: plugin.clearMemories(params.agentId, params.keepCore !== false) }; break;
+              case 'memory_update': result = { success: plugin.updateMemory(params.agentId, params.memoryId, params.content) }; break;
+            }
+            return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+          } catch (err: any) {
+            return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
+          }
         }
-      }
-    });
-
-    // 工具: memory_stats
-    api.registerTool({
-      name: 'memory_stats',
-      label: 'Memory Stats',
-      description: '查看记忆统计',
-      parameters: {
-        type: 'object',
-        properties: {
-          agentId: { type: 'string', description: 'Agent ID' }
-        },
-        required: ['agentId']
-      },
-      async execute(_toolCallId: string, params: any) {
-        try {
-          const { agentId } = params;
-          const stats = plugin.getStats(agentId);
-          return { content: [{ type: 'text', text: JSON.stringify(stats) }] };
-        } catch (err: any) {
-          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
-        }
-      }
-    });
-
-    // 工具: memory_get
-    api.registerTool({
-      name: 'memory_get',
-      label: 'Memory Get',
-      description: '获取单条记忆',
-      parameters: {
-        type: 'object',
-        properties: {
-          agentId: { type: 'string', description: 'Agent ID' },
-          memoryId: { type: 'string', description: '记忆 ID' }
-        },
-        required: ['agentId', 'memoryId']
-      },
-      async execute(_toolCallId: string, params: any) {
-        try {
-          const { agentId, memoryId } = params;
-          const memory = plugin.getMemory(agentId, memoryId);
-          return { content: [{ type: 'text', text: JSON.stringify(memory) }] };
-        } catch (err: any) {
-          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
-        }
-      }
-    });
-
-    // 工具: memory_delete
-    api.registerTool({
-      name: 'memory_delete',
-      label: 'Memory Delete',
-      description: '删除记忆',
-      parameters: {
-        type: 'object',
-        properties: {
-          agentId: { type: 'string', description: 'Agent ID' },
-          memoryId: { type: 'string', description: '记忆 ID' }
-        },
-        required: ['agentId', 'memoryId']
-      },
-      async execute(_toolCallId: string, params: any) {
-        try {
-          const { agentId, memoryId } = params;
-          const deleted = plugin.deleteMemory(agentId, memoryId);
-          return { content: [{ type: 'text', text: JSON.stringify({ success: deleted }) }] };
-        } catch (err: any) {
-          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
-        }
-      }
-    });
-
-    // 工具: memory_clear
-    api.registerTool({
-      name: 'memory_clear',
-      label: 'Memory Clear',
-      description: '清空记忆',
-      parameters: {
-        type: 'object',
-        properties: {
-          agentId: { type: 'string', description: 'Agent ID' },
-          keepCore: { type: 'boolean', description: '是否保留核心记忆', default: true }
-        },
-        required: ['agentId']
-      },
-      async execute(_toolCallId: string, params: any) {
-        try {
-          const { agentId, keepCore = true } = params;
-          const count = plugin.clearMemories(agentId, keepCore);
-          return { content: [{ type: 'text', text: JSON.stringify({ deleted: count }) }] };
-        } catch (err: any) {
-          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
-        }
-      }
-    });
-
-    // 工具: memory_update
-    api.registerTool({
-      name: 'memory_update',
-      label: 'Memory Update',
-      description: '更新记忆',
-      parameters: {
-        type: 'object',
-        properties: {
-          agentId: { type: 'string', description: 'Agent ID' },
-          memoryId: { type: 'string', description: '记忆 ID' },
-          content: { type: 'string', description: '新内容' }
-        },
-        required: ['agentId', 'memoryId', 'content']
-      },
-      async execute(_toolCallId: string, params: any) {
-        try {
-          const { agentId, memoryId, content } = params;
-          const updated = plugin.updateMemory(agentId, memoryId, content);
-          return { content: [{ type: 'text', text: JSON.stringify({ success: updated }) }] };
-        } catch (err: any) {
-          return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true };
-        }
-      }
+      });
     });
 
     // 事件钩子
@@ -681,7 +632,7 @@ const algoMemoryPlugin = {
       if (DEFAULT_CONFIG.autoCapture) await plugin.store(agentId, messages);
       if (DEFAULT_CONFIG.autoRecall) {
         const userMsg = messages.find((m: any) => m.role === 'user');
-        if (userMsg) {
+        if (userMsg && shouldRetrieve(userMsg.content || '', DEFAULT_CONFIG.adaptiveRetrieval)) {
           const result = await plugin.recall(agentId, userMsg.content || '');
           if (result.hasMemory) { /* 注入上下文 */ }
         }
@@ -689,7 +640,9 @@ const algoMemoryPlugin = {
     });
 
     api.onDeactivate(() => plugin.close());
-    log.info('[algo-memory] 插件注册完成, 工具数: 7, LLM: ' + (api.pluginConfig?.llm?.enabled ? '启用' : '关闭'));
+    
+    const cfg = api.pluginConfig || {};
+    log.info(`[algo-memory] 插件注册完成, 工具数: 7, LLM: ${cfg.llm?.enabled ? '启用' : '关闭'}, 噪声过滤: ${cfg.noiseFilter?.enabled !== false}, Weibull: ${cfg.weibullDecay?.enabled}, Session: ${cfg.sessionMemory?.enabled}`);
   }
 };
 
