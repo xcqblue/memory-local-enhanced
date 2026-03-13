@@ -244,6 +244,15 @@ export class MemoryPlugin {
     });
   }
 
+  // 日志方法
+  private log(level: 'error' | 'warn' | 'info' | 'debug', message: string, ...args: any[]): void {
+    const logLevel = this.config.logLevel || 'info';
+    const levels = { error: 0, warn: 1, info: 2, debug: 3 };
+    if (levels[level] <= levels[logLevel]) {
+      console.log(`[Memory] ${message}`, ...args);
+    }
+  }
+
   // 初始化数据库
   async init(): Promise<void> {
     const dir = path.dirname(this.dbPath);
@@ -332,132 +341,6 @@ export class MemoryPlugin {
   }
 
   // 处理并存储单条记忆
-  private async processAndStore(agentId: string, content: string): Promise<void> {
-    // 1. 分类
-    let type = ruleClassify(content);
-    let keywords = extractKeywords(content);
-    
-    // 2. LLM 增强 (可选)
-    if (this.config.llm.enabled && content.length > this.config.llm.thresholdLength) {
-      try {
-        const enhanced = await this.llmEnhance(content);
-        if (enhanced) {
-          // 只有 LLM 返回合法 type 时才使用
-          if (enhanced.type) {
-            type = enhanced.type;
-          }
-          // 只有 LLM 返回有效关键词时才使用
-          if (enhanced.keywords && enhanced.keywords !== '[]') {
-            keywords = enhanced.keywords;
-          }
-        }
-      } catch (error) {
-        console.error('[Memory] LLM 增强失败:', error);
-      }
-    }
-
-    // 3. 哈希去重
-    const contentHash = hashContent(content);
-    const existing = this.db.prepare(
-      'SELECT id FROM memories WHERE agent_id = ? AND content_hash = ?'
-    ).get(agentId, contentHash) as { id: string } | undefined;
-
-    if (existing) {
-      // 更新访问时间
-      this.db.prepare(
-        'UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?'
-      ).run(Date.now(), existing.id);
-    } else {
-      // 转义内容防止 XSS (先转义，后续都用转义后的内容)
-      const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      
-      // 哈希基于转义后的内容，确保去重逻辑一致
-      const contentHash = hashContent(safeContent);
-      
-      // 哈希查重
-      const existing = this.db.prepare(
-        'SELECT id FROM memories WHERE agent_id = ? AND content_hash = ?'
-      ).get(agentId, contentHash) as { id: string } | undefined;
-
-      if (existing) {
-        // 更新访问时间
-        this.db.prepare(
-          'UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?'
-        ).run(Date.now(), existing.id);
-      } else {
-        // 智能去重 (Jaccard 相似度) - 使用转义后的内容
-        const dedup = await this.smartDedup(agentId, safeContent);
-      
-      if (dedup.existingId) {
-        if (dedup.result === 'DUPLICATE') {
-          // 完全重复 - 更新访问时间
-          this.db.prepare(
-            'UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?'
-          ).run(Date.now(), dedup.existingId);
-          this.invalidateCache(agentId);
-          return;
-        } else if (dedup.result === 'UPDATE') {
-          // 相似内容 - 合并更新 (同时更新关键词)
-          const oldMemory = this.db.prepare('SELECT content, keywords FROM memories WHERE id = ?').get(dedup.existingId) as { content: string; keywords: string } | undefined;
-          if (oldMemory) {
-            const mergedContent = oldMemory.content + '\n' + safeContent;
-            const safeMerged = mergedContent.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const mergedKeywords = extractKeywords(safeMerged);
-            this.db.prepare(
-              'UPDATE memories SET content = ?, keywords = ?, access_count = access_count + 1, last_accessed = ? WHERE id = ?'
-            ).run(safeMerged, mergedKeywords, Date.now(), dedup.existingId);
-            this.invalidateCache(agentId);
-            return;
-          }
-        }
-      }
-      
-      // 写入新记忆 (使用事务保证一致性)
-      // 自动判断是否为核心记忆 (根据关键词)
-      const isCore = isCoreKeyword(content);
-      const layer: 'core' | 'general' = isCore ? 'core' : 'general';
-      const importance = isCore ? 1.0 : 0.5;
-      
-      // 关键词基于转义后的内容
-      const safeKeywords = extractKeywords(safeContent);
-      
-      const memory: Memory = {
-        id: generateId(),
-        agent_id: agentId,
-        content: safeContent,
-        type,
-        layer,
-        keywords: safeKeywords,
-        importance,
-        access_count: 1,
-        created_at: Date.now(),
-        last_accessed: Date.now(),
-        content_hash: contentHash
-      };
-
-      const insertMemory = this.db.prepare(`
-        INSERT INTO memories (id, agent_id, content, type, layer, keywords, importance, access_count, created_at, last_accessed, content_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      const transaction = this.db.transaction(() => {
-        insertMemory.run(
-          memory.id, memory.agent_id, memory.content, memory.type, memory.layer,
-          memory.keywords, memory.importance, memory.access_count,
-          memory.created_at, memory.last_accessed, memory.content_hash
-        );
-        
-        // 插入 FTS 索引 (使用 memory id 关联)
-        this.db.prepare('INSERT INTO memories_fts (id, content, keywords) VALUES (?, ?, ?)')
-          .run(memory.id, safeContent, keywords);
-      });
-      
-      transaction();
-    }
-
-    // 4. 清理缓存
-    this.invalidateCache(agentId);
-  }
 
   // LLM 增强 (支持多种提供商)
   private async llmEnhance(content: string): Promise<{ type?: string; keywords?: string } | null> {
@@ -1439,3 +1322,97 @@ export async function onunload(): Promise<void> {
     memoryPlugin.close();
   }
 }
+
+  private async processAndStore(agentId: string, content: string): Promise<void> {
+    // 1. 分类
+    let type = ruleClassify(content);
+    let keywords = extractKeywords(content);
+    
+    // 2. LLM 增强 (可选)
+    if (this.config.llm.enabled && content.length > this.config.llm.thresholdLength) {
+      try {
+        const enhanced = await this.llmEnhance(content);
+        if (enhanced) {
+          if (enhanced.type) type = enhanced.type;
+          if (enhanced.keywords && enhanced.keywords !== '[]') keywords = enhanced.keywords;
+        }
+      } catch (error) {
+        console.error('[Memory] LLM 增强失败:', error);
+      }
+    }
+
+    // 3. XSS 转义
+    const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    
+    // 4. 哈希计算 (基于转义后的内容)
+    const contentHash = hashContent(safeContent);
+    
+    // 5. 哈希查重
+    const existing = this.db.prepare(
+      'SELECT id FROM memories WHERE agent_id = ? AND content_hash = ?'
+    ).get(agentId, contentHash) as { id: string } | undefined;
+
+    if (existing) {
+      this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(Date.now(), existing.id);
+      this.invalidateCache(agentId);
+      return;
+    }
+
+    // 6. 智能去重 (Jaccard)
+    const dedup = await this.smartDedup(agentId, safeContent);
+    
+    if (dedup.existingId) {
+      if (dedup.result === 'DUPLICATE') {
+        this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(Date.now(), dedup.existingId);
+        this.invalidateCache(agentId);
+        return;
+      } else if (dedup.result === 'UPDATE') {
+        const oldMemory = this.db.prepare('SELECT content, keywords FROM memories WHERE id = ?').get(dedup.existingId) as { content: string; keywords: string } | undefined;
+        if (oldMemory) {
+          const mergedContent = oldMemory.content + '\n' + safeContent;
+          const safeMerged = mergedContent.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          const mergedKeywords = extractKeywords(safeMerged);
+          this.db.prepare('UPDATE memories SET content = ?, keywords = ?, access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(safeMerged, mergedKeywords, Date.now(), dedup.existingId);
+          this.invalidateCache(agentId);
+          return;
+        }
+      }
+    }
+    
+    // 7. 写入新记忆
+    const isCore = isCoreKeyword(content);
+    const layer: 'core' | 'general' = isCore ? 'core' : 'general';
+    const importance = isCore ? 1.0 : 0.5;
+    const safeKeywords = extractKeywords(safeContent);
+    
+    const memory: Memory = {
+      id: generateId(),
+      agent_id: agentId,
+      content: safeContent,
+      type,
+      layer,
+      keywords: safeKeywords,
+      importance,
+      access_count: 1,
+      created_at: Date.now(),
+      last_accessed: Date.now(),
+      content_hash: contentHash
+    };
+
+    const insertMemory = this.db.prepare(`
+      INSERT INTO memories (id, agent_id, content, type, layer, keywords, importance, access_count, created_at, last_accessed, content_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const transaction = this.db.transaction(() => {
+      insertMemory.run(
+        memory.id, memory.agent_id, memory.content, memory.type, memory.layer,
+        memory.keywords, memory.importance, memory.access_count,
+        memory.created_at, memory.last_accessed, memory.content_hash
+      );
+      this.db.prepare('INSERT INTO memories_fts (id, content, keywords) VALUES (?, ?, ?)').run(memory.id, safeContent, safeKeywords);
+    });
+    
+    transaction();
+    this.invalidateCache(agentId);
+  }
