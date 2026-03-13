@@ -702,11 +702,85 @@ export class MemoryPlugin {
     }
   }
 
-  // 检查 GitHub 更新
-  async checkUpdate(): Promise<{ hasUpdate: boolean; latestCommit: string; currentCommit: string }> {
+  // 获取当前版本号 (日期格式: YYYYMMDD + 可选后缀)
+  private getCurrentVersion(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const baseVersion = `${year}${month}${day}`;
+    
+    // 检查是否有当天多次更新的后缀文件
+    const versionFile = path.join(process.cwd(), '.openclaw', 'memory-enhanced', 'version.json');
     try {
-      // 获取当前版本
-      const currentCommit = '1cd47ef'; // 当前提交ID
+      if (fs.existsSync(versionFile)) {
+        const versionData = JSON.parse(fs.readFileSync(versionFile, 'utf8'));
+        if (versionData.baseVersion === baseVersion && versionData.suffix) {
+          return `${baseVersion}${versionData.suffix}`;
+        }
+      }
+    } catch (e) {
+      // 忽略错误
+    }
+    
+    return baseVersion;
+  }
+
+  // 保存版本号 (支持同一天多次更新)
+  private saveVersion(suffix?: string): void {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const baseVersion = `${year}${month}${day}`;
+    
+    const versionFile = path.join(process.cwd(), '.openclaw', 'memory-enhanced', 'version.json');
+    const dir = path.dirname(versionFile);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    
+    const versionData = {
+      baseVersion,
+      suffix: suffix || '',
+      updatedAt: Date.now()
+    };
+    
+    fs.writeFileSync(versionFile, JSON.stringify(versionData, null, 2));
+  }
+
+  // 增加版本后缀 (当天多次更新时)
+  bumpVersion(): void {
+    const versionFile = path.join(process.cwd(), '.openclaw', 'memory-enhanced', 'version.json');
+    try {
+      if (fs.existsSync(versionFile)) {
+        const versionData = JSON.parse(fs.readFileSync(versionFile, 'utf8'));
+        const currentSuffix = versionData.suffix || '';
+        
+        if (currentSuffix === '') {
+          versionData.suffix = 'a';
+        } else {
+          // 生成下一个后缀字母
+          const lastChar = currentSuffix.charCodeAt(currentSuffix.length - 1);
+          if (lastChar >= 97 && lastChar < 122) { // a-z
+            versionData.suffix = currentSuffix.slice(0, -1) + String.fromCharCode(lastChar + 1);
+          } else {
+            versionData.suffix = currentSuffix + 'a';
+          }
+        }
+        
+        fs.writeFileSync(versionFile, JSON.stringify(versionData, null, 2));
+        console.log(`[Memory] 版本号已更新: ${versionData.baseVersion}${versionData.suffix}`);
+      }
+    } catch (e) {
+      console.error('[Memory] 更新版本失败:', e);
+    }
+  }
+
+  // 检查 GitHub 更新
+  async checkUpdate(): Promise<{ hasUpdate: boolean; latestCommit: string; currentVersion: string }> {
+    try {
+      const currentVersion = this.getCurrentVersion();
       
       // 获取最新版本
       const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/commits/master`);
@@ -714,13 +788,13 @@ export class MemoryPlugin {
       const latestCommit = data.sha?.substring(0, 7) || 'unknown';
       
       return {
-        hasUpdate: latestCommit !== currentCommit,
+        hasUpdate: latestCommit !== currentVersion,
         latestCommit,
-        currentCommit
+        currentVersion
       };
     } catch (error) {
       console.error('[Memory] 检查更新失败:', error);
-      return { hasUpdate: false, latestCommit: 'unknown', currentCommit: 'unknown' };
+      return { hasUpdate: false, latestCommit: 'unknown', currentVersion: 'unknown' };
     }
   }
 
@@ -745,6 +819,10 @@ export class MemoryPlugin {
       }
       
       fs.writeFileSync(updatePath, newCode, 'utf8');
+      
+      // 保存版本号
+      this.saveVersion();
+      
       console.log('[Memory] 更新完成，请重启 OpenClaw');
       
       return { success: true, message: '更新完成，请重启 OpenClaw' };
@@ -775,6 +853,10 @@ export class MemoryPlugin {
       }
       
       fs.writeFileSync(updatePath, newCode, 'utf8');
+      
+      // 保存版本号
+      this.saveVersion();
+      
       console.log('[Memory] 从文件更新完成，请重启 OpenClaw');
       
       return { success: true, message: '更新完成，请重启 OpenClaw' };
@@ -892,9 +974,9 @@ export async function onload(context: any): Promise<void> {
           execute: async () => {
             const result = await memoryPlugin.checkUpdate();
             if (result.hasUpdate) {
-              return { type: 'text', content: `发现新版本: ${result.latestCommit} (当前: ${result.currentCommit})\n使用 memory update 更新` };
+              return { type: 'text', content: `发现新版本: ${result.latestCommit} (当前: ${result.currentVersion})\n使用 memory update 更新` };
             }
-            return { type: 'text', content: `当前已是最新版本: ${result.currentCommit}` };
+            return { type: 'text', content: `当前已是最新版本: ${result.currentVersion}` };
           }
         },
         update: {
@@ -915,6 +997,13 @@ export async function onload(context: any): Promise<void> {
             }
             const result = await memoryPlugin.updateFromFile(opts.path);
             return { type: 'text', content: result.message };
+          }
+        },
+        'bump-version': {
+          description: '手动增加版本后缀 (当天多次更新时使用)',
+          execute: async () => {
+            memoryPlugin.bumpVersion();
+            return { type: 'text', content: '版本号已更新' };
           }
         }
       }
