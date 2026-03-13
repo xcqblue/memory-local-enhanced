@@ -217,12 +217,12 @@ const algoMemoryPlugin = {
   description: '纯算法长期记忆插件 - 0 API / 可选 LLM 增强',
   kind: 'memory' as const,
 
-  register(api: any) {
+  register(api: any): Promise<void> {
     const log = api.logger || console;
     const plugin = new MemoryPlugin(api.pluginConfig || {}, log);
 
     const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
-    plugin.init(stateDir);
+    await plugin.init(stateDir);
 
     // 注册工具 - memory_list
     api.registerTool({
