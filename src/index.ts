@@ -66,6 +66,9 @@ interface RecallResult {
 }
 
 // ============= 工具函数 =============
+const GITHUB_REPO = 'xcqblue/memory-local-enhanced';
+const GITHUB_RAW_BASE = 'https://raw.githubusercontent.com/xcqblue/memory-local-enhanced/master';
+
 function generateId(): string {
   return crypto.randomUUID();
 }
@@ -698,6 +701,58 @@ export class MemoryPlugin {
       this.db.close();
     }
   }
+
+  // 检查 GitHub 更新
+  async checkUpdate(): Promise<{ hasUpdate: boolean; latestCommit: string; currentCommit: string }> {
+    try {
+      // 获取当前版本
+      const currentCommit = '1cd47ef'; // 当前提交ID
+      
+      // 获取最新版本
+      const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/commits/master`);
+      const data = await response.json();
+      const latestCommit = data.sha?.substring(0, 7) || 'unknown';
+      
+      return {
+        hasUpdate: latestCommit !== currentCommit,
+        latestCommit,
+        currentCommit
+      };
+    } catch (error) {
+      console.error('[Memory] 检查更新失败:', error);
+      return { hasUpdate: false, latestCommit: 'unknown', currentCommit: 'unknown' };
+    }
+  }
+
+  // 从 GitHub 拉取更新
+  async updateFromGitHub(): Promise<{ success: boolean; message: string }> {
+    try {
+      console.log('[Memory] 正在从 GitHub 拉取更新...');
+      
+      // 获取最新源码
+      const response = await fetch(`${GITHUB_RAW_BASE}/src/index.ts`);
+      if (!response.ok) {
+        return { success: false, message: `拉取失败: ${response.status}` };
+      }
+      
+      const newCode = await response.text();
+      
+      // 写入文件
+      const updatePath = path.join(process.cwd(), '.openclaw', 'plugins', 'memory-local-enhanced', 'src', 'index.ts');
+      const dir = path.dirname(updatePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      
+      fs.writeFileSync(updatePath, newCode, 'utf8');
+      console.log('[Memory] 更新完成，请重启 OpenClaw');
+      
+      return { success: true, message: '更新完成，请重启 OpenClaw' };
+    } catch (error) {
+      console.error('[Memory] 更新失败:', error);
+      return { success: false, message: `更新失败: ${error}` };
+    }
+  }
 }
 
 // ============= OpenClaw 钩子 =============
@@ -800,6 +855,23 @@ export async function onload(context: any): Promise<void> {
           execute: async () => {
             const count = await memoryPlugin.cleanupExpired();
             return { type: 'text', content: `已清理 ${count} 条过期记忆` };
+          }
+        },
+        'check-update': {
+          description: '检查 GitHub 是否有新版本',
+          execute: async () => {
+            const result = await memoryPlugin.checkUpdate();
+            if (result.hasUpdate) {
+              return { type: 'text', content: `发现新版本: ${result.latestCommit} (当前: ${result.currentCommit})\n使用 memory update 更新` };
+            }
+            return { type: 'text', content: `当前已是最新版本: ${result.currentCommit}` };
+          }
+        },
+        update: {
+          description: '从 GitHub 更新插件',
+          execute: async () => {
+            const result = await memoryPlugin.updateFromGitHub();
+            return { type: 'text', content: result.message };
           }
         }
       }
