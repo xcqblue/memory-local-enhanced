@@ -753,6 +753,36 @@ export class MemoryPlugin {
       return { success: false, message: `更新失败: ${error}` };
     }
   }
+
+  // 从本地文件更新
+  async updateFromFile(filePath: string): Promise<{ success: boolean; message: string }> {
+    try {
+      if (!filePath) {
+        return { success: false, message: '请提供文件路径' };
+      }
+      
+      if (!fs.existsSync(filePath)) {
+        return { success: false, message: `文件不存在: ${filePath}` };
+      }
+      
+      const newCode = fs.readFileSync(filePath, 'utf8');
+      
+      // 写入插件目录
+      const updatePath = path.join(process.cwd(), '.openclaw', 'plugins', 'memory-local-enhanced', 'src', 'index.ts');
+      const dir = path.dirname(updatePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      
+      fs.writeFileSync(updatePath, newCode, 'utf8');
+      console.log('[Memory] 从文件更新完成，请重启 OpenClaw');
+      
+      return { success: true, message: '更新完成，请重启 OpenClaw' };
+    } catch (error) {
+      console.error('[Memory] 从文件更新失败:', error);
+      return { success: false, message: `更新失败: ${error}` };
+    }
+  }
 }
 
 // ============= OpenClaw 钩子 =============
@@ -871,6 +901,19 @@ export async function onload(context: any): Promise<void> {
           description: '从 GitHub 更新插件',
           execute: async () => {
             const result = await memoryPlugin.updateFromGitHub();
+            return { type: 'text', content: result.message };
+          }
+        },
+        'update-file': {
+          description: '从本地文件更新插件',
+          options: [
+            { name: 'path', alias: 'p', required: true, description: '文件路径' }
+          ],
+          execute: async (opts: any) => {
+            if (!opts.path) {
+              return { type: 'text', content: '错误: 请指定文件路径 (-p <path>)' };
+            }
+            const result = await memoryPlugin.updateFromFile(opts.path);
             return { type: 'text', content: result.message };
           }
         }
