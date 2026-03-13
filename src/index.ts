@@ -155,6 +155,22 @@ function jaccardSimilarity(text1: string, text2: string): number {
 }
 
 // 时间衰减函数
+function calculateRecencyScore(lastAccessed: number, halfLifeDays: number = 90): number {
+  const now = Date.now();
+  const daysPassed = (now - lastAccessed) / (1000 * 60 * 60 * 24);
+  return 0.3 + 0.7 * Math.pow(0.5, daysPassed / halfLifeDays);
+}
+
+// Jaccard 相似度 (0-1, 越高越相似)
+function jaccardSimilarity(text1: string, text2: string): number {
+  const set1 = new Set(text1.toLowerCase().split(''));
+  const set2 = new Set(text2.toLowerCase().split(''));
+  const intersection = new Set([...set1].filter(x => set2.has(x)));
+  const union = new Set([...set1, ...set2]);
+  return union.size === 0 ? 0 : intersection.size / union.size;
+}
+
+// 时间衰减函数
 function calculateRecencyScore(lastAccessed: number, halfLifeDays: number = 14): number {
   const now = Date.now();
   const daysPassed = (now - lastAccessed) / (1000 * 60 * 60 * 24);
@@ -352,8 +368,25 @@ export class MemoryPlugin {
         'UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?'
       ).run(Date.now(), existing.id);
     } else {
-      // 智能去重 (Jaccard 相似度)
-      const dedup = await this.smartDedup(agentId, content);
+      // 转义内容防止 XSS (先转义，后续都用转义后的内容)
+      const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      
+      // 哈希基于转义后的内容，确保去重逻辑一致
+      const contentHash = hashContent(safeContent);
+      
+      // 哈希查重
+      const existing = this.db.prepare(
+        'SELECT id FROM memories WHERE agent_id = ? AND content_hash = ?'
+      ).get(agentId, contentHash) as { id: string } | undefined;
+
+      if (existing) {
+        // 更新访问时间
+        this.db.prepare(
+          'UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?'
+        ).run(Date.now(), existing.id);
+      } else {
+        // 智能去重 (Jaccard 相似度) - 使用转义后的内容
+        const dedup = await this.smartDedup(agentId, safeContent);
       
       if (dedup.existingId) {
         if (dedup.result === 'DUPLICATE') {
@@ -364,14 +397,15 @@ export class MemoryPlugin {
           this.invalidateCache(agentId);
           return;
         } else if (dedup.result === 'UPDATE') {
-          // 相似内容 - 合并更新
-          const oldMemory = this.db.prepare('SELECT content FROM memories WHERE id = ?').get(dedup.existingId) as { content: string } | undefined;
+          // 相似内容 - 合并更新 (同时更新关键词)
+          const oldMemory = this.db.prepare('SELECT content, keywords FROM memories WHERE id = ?').get(dedup.existingId) as { content: string; keywords: string } | undefined;
           if (oldMemory) {
-            const mergedContent = oldMemory.content + '\n' + content;
+            const mergedContent = oldMemory.content + '\n' + safeContent;
             const safeMerged = mergedContent.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const mergedKeywords = extractKeywords(safeMerged);
             this.db.prepare(
-              'UPDATE memories SET content = ?, access_count = access_count + 1, last_accessed = ? WHERE id = ?'
-            ).run(safeMerged, Date.now(), dedup.existingId);
+              'UPDATE memories SET content = ?, keywords = ?, access_count = access_count + 1, last_accessed = ? WHERE id = ?'
+            ).run(safeMerged, mergedKeywords, Date.now(), dedup.existingId);
             this.invalidateCache(agentId);
             return;
           }
@@ -379,19 +413,13 @@ export class MemoryPlugin {
       }
       
       // 写入新记忆 (使用事务保证一致性)
-      // 转义内容防止 XSS
-      const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      
-      // 关键词提取基于转义后的内容，确保搜索时能匹配
-      const safeKeywords = extractKeywords(safeContent);
-      
-      // 哈希基于转义后的内容，确保去重逻辑一致
-      const contentHash = hashContent(safeContent);
-      
       // 自动判断是否为核心记忆 (根据关键词)
       const isCore = isCoreKeyword(content);
       const layer: 'core' | 'general' = isCore ? 'core' : 'general';
       const importance = isCore ? 1.0 : 0.5;
+      
+      // 关键词基于转义后的内容
+      const safeKeywords = extractKeywords(safeContent);
       
       const memory: Memory = {
         id: generateId(),
