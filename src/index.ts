@@ -192,13 +192,12 @@ export class MemoryPlugin {
       CREATE INDEX IF NOT EXISTS idx_layer ON memories(agent_id, layer);
     `);
 
-    // 创建 FTS5 表 (通过外部内容方式关联)
+    // 创建 FTS5 表 (外部内容方式)
     this.db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+        id UNINDEXED,
         content,
-        keywords,
-        content='memories',
-        content_rowid='rowid'
+        keywords
       );
     `);
 
@@ -211,6 +210,11 @@ export class MemoryPlugin {
     `);
 
     console.log('[Memory] 数据库初始化完成:', this.dbPath);
+
+    // 启动定时清理任务 (每天检查一次)
+    setInterval(() => {
+      this.cleanupExpired().catch(err => console.error('[Memory] 定时清理失败:', err));
+    }, 24 * 60 * 60 * 1000);
   }
 
   // 存储记忆
@@ -281,8 +285,6 @@ export class MemoryPlugin {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
-      const insertFts = this.db.prepare('INSERT INTO memories_fts (rowid, content, keywords) VALUES (last_insert_rowid(), ?, ?)');
-
       const transaction = this.db.transaction(() => {
         insertMemory.run(
           memory.id, memory.agent_id, memory.content, memory.type, memory.layer,
@@ -290,11 +292,9 @@ export class MemoryPlugin {
           memory.created_at, memory.last_accessed, memory.content_hash
         );
         
-        // 获取刚插入的 rowid 并插入 FTS
-        const row = this.db.prepare('SELECT rowid as id FROM memories WHERE id = ?').get(memory.id) as { id: number };
-        if (row) {
-          insertFts.run(content, keywords);
-        }
+        // 插入 FTS 索引 (使用 memory id 关联)
+        this.db.prepare('INSERT INTO memories_fts (id, content, keywords) VALUES (?, ?, ?)')
+          .run(memory.id, content, keywords);
       });
       
       transaction();
@@ -323,36 +323,45 @@ export class MemoryPlugin {
 
     try {
       let response: Response;
-      
+      let url = '';
+      let headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      let body: any = {};
+
       if (provider === 'ollama') {
         // Ollama 本地模型
-        response = await fetch(`${baseURL}/api/generate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: model || 'llama2', prompt, stream: false })
-        });
+        url = `${baseURL}/api/generate`;
+        body = { model: model || 'llama2', prompt, stream: false };
+      } else if (provider === 'openai' || provider === 'claude' || provider === 'deepseek') {
+        // OpenAI / Claude / DeepSeek 兼容格式
+        url = `${baseURL}/chat/completions`;
+        headers['Authorization'] = `Bearer ${apiKey}`;
+        body = {
+          model: model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.3
+        };
+      } else if (provider === 'minimax') {
+        // MiniMax 格式
+        url = `${baseURL}/text/chatcompletion_pro`;
+        headers['Authorization'] = `Bearer ${apiKey}`;
+        body = {
+          model: model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.3
+        };
       } else {
-        // OpenAI / MiniMax / Claude / DeepSeek 兼容格式
-        const apiFormat = provider === 'minimax' ? { messages: [{ role: 'user', content: prompt }] } 
-          : provider === 'deepseek' ? { messages: [{ role: 'user', content: prompt }] }
-          : { messages: [{ role: 'user', content: prompt }] };
-        
-        response = await fetch(`${baseURL}/chat/completions`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            ...apiFormat,
-            model: model,
-            temperature: 0.3
-          })
-        });
+        console.warn(`[Memory] 不支持的 LLM provider: ${provider}`);
+        return null;
       }
 
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      });
+
       if (!response.ok) {
-        throw new Error(`LLM API error: ${response.status}`);
+        throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
       }
 
       const data = await response.json();
@@ -360,6 +369,9 @@ export class MemoryPlugin {
       
       if (provider === 'ollama') {
         text = data.response;
+      } else if (provider === 'minimax') {
+        // MiniMax 响应格式
+        text = data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reply || '';
       } else {
         text = data.choices?.[0]?.message?.content || '';
       }
@@ -368,8 +380,11 @@ export class MemoryPlugin {
       const match = text.match(/\{[\s\S]*\}/);
       if (match) {
         const result = JSON.parse(match[0]);
+        // 校验 type 合法性
+        const validTypes = ['preference', 'fact', 'event', 'entity', 'case', 'pattern', 'other'];
+        const type = validTypes.includes(result.type) ? result.type : undefined;
         return {
-          type: result.type,
+          type,
           keywords: JSON.stringify(result.keywords?.split(',').map((k: string) => k.trim()).filter(Boolean) || [])
         };
       }
@@ -437,6 +452,13 @@ export class MemoryPlugin {
     // Token 限制
     const limited = this.limitByTokens(validMemories, this.config.maxContextChars);
 
+    // 自动升级频繁访问的记忆为 core
+    for (const m of limited) {
+      if (m.layer === 'general' && m.access_count >= 5) {
+        this.promoteToCore(agentId, m.id);
+      }
+    }
+
     // 缓存
     if (this.config.cacheEnabled) {
       this.cache.set(cacheKey, limited);
@@ -462,17 +484,23 @@ export class MemoryPlugin {
 
   // 清理指定 Agent 的缓存
   private invalidateCache(agentId: string): void {
-    if (this.config.cacheEnabled) {
-      // 清理该 Agent 相关的缓存 key
-      const keysToDelete: string[] = [];
+    if (this.config.cacheEnabled && this.cache) {
+      // 遍历缓存找到匹配的 key 并删除
+      // 注意: LRUCache 不支持直接删除单个 key，需要重建
+      const newCache = new LRUCache<string, Memory[]>({
+        max: 100,
+        ttl: 5 * 60 * 1000
+      });
+      
       for (const key of this.cache.keys()) {
-        if (key.includes(`:${agentId}:`)) {
-          keysToDelete.push(key);
+        if (!key.includes(`:${agentId}:`)) {
+          const value = this.cache.get(key);
+          if (value) newCache.set(key, value);
         }
       }
-      // LRU Cache 不支持单个删除，重新创建缓存
-      // 这里简单处理：当缓存过大时让 LRU 自动淘汰
-      console.log(`[Memory] 缓存待清理 keys: ${keysToDelete.length}`);
+      
+      // 替换缓存
+      (this as any).cache = newCache;
     }
   }
 
@@ -480,12 +508,12 @@ export class MemoryPlugin {
   async deleteAgent(agentId: string): Promise<void> {
     // 使用事务保证一致性
     const transaction = this.db.transaction(() => {
-      // 先获取该 Agent 的所有 rowid
-      const rows = this.db.prepare('SELECT rowid as id FROM memories WHERE agent_id = ?').all(agentId) as { id: number }[];
+      // 先获取该 Agent 的所有 id
+      const rows = this.db.prepare('SELECT id FROM memories WHERE agent_id = ?').all(agentId) as { id: string }[];
       
       // 删除 FTS 记录
       for (const row of rows) {
-        this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(row.id);
+        this.db.prepare('DELETE FROM memories_fts WHERE id = ?').run(row.id);
       }
       
       // 删除记忆
@@ -506,12 +534,12 @@ export class MemoryPlugin {
     
     // 获取要删除的记忆
     const rows = this.db.prepare(
-      'SELECT rowid as id FROM memories WHERE last_accessed < ? AND layer = "general"'
-    ).all(cutoffTime) as { id: number }[];
+      'SELECT id FROM memories WHERE last_accessed < ? AND layer = "general"'
+    ).all(cutoffTime) as { id: string }[];
     
     // 删除 FTS 记录
     for (const row of rows) {
-      this.db.prepare('DELETE FROM memories_fts WHERE rowid = ?').run(row.id);
+      this.db.prepare('DELETE FROM memories_fts WHERE id = ?').run(row.id);
     }
     
     // 删除记忆
@@ -618,11 +646,9 @@ export class MemoryPlugin {
         memory.created_at, memory.last_accessed, memory.content_hash
       );
       
-      const row = this.db.prepare('SELECT rowid as id FROM memories WHERE id = ?').get(memory.id) as { id: number };
-      if (row) {
-        this.db.prepare('INSERT INTO memories_fts (rowid, content, keywords) VALUES (?, ?, ?)')
-          .run(row.id, content, memory.keywords);
-      }
+      // 插入 FTS 索引
+      this.db.prepare('INSERT INTO memories_fts (id, content, keywords) VALUES (?, ?, ?)')
+        .run(memory.id, content, memory.keywords);
     });
     
     transaction();
