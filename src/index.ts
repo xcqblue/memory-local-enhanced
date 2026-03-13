@@ -8,7 +8,7 @@
  * - 智能去重 (Jaccard)
  * - 核心记忆识别
  * - 时间衰减
- * - 关键词搜索
+ * - LLM 阈值介入 (可选)
  */
 
 import LRUCache from 'lru-cache';
@@ -28,6 +28,21 @@ interface Config {
   recencyHalfLife: number;
   smartDedup: boolean;
   dedupThreshold: number;
+  // LLM 配置 (可选)
+  llm: {
+    enabled: boolean;
+    provider: string;
+    apiKey: string;
+    model: string;
+    baseURL: string;
+  };
+  // LLM 阈值配置
+  threshold: {
+    useLlmForCore: boolean;
+    useLlmForExtract: boolean;
+    useLlmForDedup: boolean;
+    minConfidence: number;
+  };
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -43,7 +58,22 @@ const DEFAULT_CONFIG: Config = {
   recencyDecay: true,
   recencyHalfLife: 180,
   smartDedup: true,
-  dedupThreshold: 0.85
+  dedupThreshold: 0.85,
+  // LLM 默认关闭
+  llm: {
+    enabled: false,
+    provider: 'openai',
+    apiKey: '',
+    model: 'gpt-4o-mini',
+    baseURL: 'https://api.openai.com/v1'
+  },
+  // 阈值默认开启本地判断
+  threshold: {
+    useLlmForCore: false,
+    useLlmForExtract: false,
+    useLlmForDedup: false,
+    minConfidence: 0.8
+  }
 };
 
 // ============= 工具函数 =============
@@ -80,13 +110,149 @@ function isNoise(content: string): boolean {
 function jaccardSimilarity(text1: string, text2: string): number {
   const words1 = new Set(text1.toLowerCase().match(/[\u4e00-\u9fa5a-zA-Z0-9]{2,}/g) || []);
   const words2 = new Set(text2.toLowerCase().match(/[\u4e00-\u9fa5a-zA-Z0-9]{2,}/g) || []);
-  
   if (words1.size === 0 || words2.size === 0) return 0;
-  
   const intersection = new Set([...words1].filter(x => words2.has(x)));
   const union = new Set([...words1, ...words2]);
-  
   return intersection.size / union.size;
+}
+
+// ============= LLM 客户端 =============
+class LLMClient {
+  private config: Config['llm'];
+  private log: any;
+
+  constructor(config: Config['llm'], log: any) {
+    this.config = config;
+    this.log = log;
+  }
+
+  // 判断是否为核心记忆 (可选 LLM)
+  async isCoreMemory(content: string): Promise<{ isCore: boolean; confidence: number }> {
+    // 本地判断
+    const localResult = isCoreKeyword(content, DEFAULT_CONFIG.coreKeywords);
+    if (localResult) {
+      return { isCore: true, confidence: 1.0 };
+    }
+
+    // 如果未启用 LLM，返回本地结果
+    if (!this.config.enabled) {
+      return { isCore: false, confidence: 0.5 };
+    }
+
+    // LLM 判断
+    try {
+      const response = await fetch(`${this.config.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`
+        },
+        body: JSON.stringify({
+          model: this.config.model,
+          messages: [{
+            role: 'system',
+            content: '判断用户输入是否包含重要信息需要长期记住。回复JSON: {"isCore": true/false, "confidence": 0-1}'
+          }, {
+            role: 'user',
+            content: content
+          }],
+          max_tokens: 100,
+          temperature: 0.1
+        })
+      });
+
+      const data = await response.json();
+      const result = JSON.parse(data.choices[0].message.content);
+      return result;
+    } catch (err) {
+      this.log.error('[algo-memory] LLM调用失败:', err);
+      return { isCore: false, confidence: 0.5 };
+    }
+  }
+
+  // 提取关键词 (可选 LLM)
+  async extractKeywords(content: string): Promise<string> {
+    // 本地提取
+    const localKeywords = extractKeywords(content);
+
+    // 如果未启用 LLM，返回本地结果
+    if (!this.config.enabled) {
+      return localKeywords;
+    }
+
+    // LLM 提取
+    try {
+      const response = await fetch(`${this.config.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`
+        },
+        body: JSON.stringify({
+          model: this.config.model,
+          messages: [{
+            role: 'system',
+            content: '提取关键信息作为关键词，用逗号分隔，最多10个。回复JSON: {"keywords": ["关键词1", "关键词2"]}'
+          }, {
+            role: 'user',
+            content: content
+          }],
+          max_tokens: 200,
+          temperature: 0.2
+        })
+      });
+
+      const data = await response.json();
+      const result = JSON.parse(data.choices[0].message.content);
+      return result.keywords.join(',');
+    } catch (err) {
+      this.log.error('[algo-memory] LLM关键词提取失败:', err);
+      return localKeywords;
+    }
+  }
+
+  // 判断是否重复 (可选 LLM)
+  async isDuplicate(content1: string, content2: string): Promise<{ isDuplicate: boolean; similarity: number }> {
+    // 本地判断
+    const localSimilarity = jaccardSimilarity(content1, content2);
+    if (localSimilarity >= 0.98 || localSimilarity < 0.5) {
+      return { isDuplicate: localSimilarity >= 0.98, similarity: localSimilarity };
+    }
+
+    // 如果未启用 LLM，返回本地结果
+    if (!this.config.enabled) {
+      return { isDuplicate: false, similarity: localSimilarity };
+    }
+
+    // LLM 判断
+    try {
+      const response = await fetch(`${this.config.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`
+        },
+        body: JSON.stringify({
+          model: this.config.model,
+          messages: [{
+            role: 'system',
+            content: '判断两段内容是否重复/相似。回复JSON: {"isDuplicate": true/false, "similarity": 0-1}'
+          }, {
+            role: 'user',
+            content: `内容1: ${content1}\n内容2: ${content2}`
+          }],
+          max_tokens: 100,
+          temperature: 0.1
+        })
+      });
+
+      const data = await response.json();
+      return JSON.parse(data.choices[0].message.content);
+    } catch (err) {
+      this.log.error('[algo-memory] LLM去重判断失败:', err);
+      return { isDuplicate: localSimilarity >= 0.85, similarity: localSimilarity };
+    }
+  }
 }
 
 // ============= 核心类 =============
@@ -95,12 +261,18 @@ class MemoryPlugin {
   private cache: LRUCache<string, any>;
   private cleanupInterval: NodeJS.Timeout | null = null;
   private config: Config;
+  private llmClient: LLMClient | null = null;
   private log: any;
 
   constructor(config: Partial<Config>, log: any = console) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.log = log;
     this.cache = new LRUCache({ max: 100, ttl: 5 * 60 * 1000 });
+    
+    // 初始化 LLM 客户端
+    if (this.config.llm.enabled) {
+      this.llmClient = new LLMClient(this.config.llm, log);
+    }
   }
 
   async init(stateDir: string): Promise<void> {
@@ -113,7 +285,6 @@ class MemoryPlugin {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
 
-    // 建表 + FTS5 索引
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
@@ -133,23 +304,12 @@ class MemoryPlugin {
       CREATE INDEX IF NOT EXISTS idx_layer ON memories(agent_id, layer);
     `);
 
-    // FTS5 虚拟表 (如果不存在)
-    try {
-      this.db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-          content, keywords, content=memories, content_rowid=rowid
-        );
-      `);
-    } catch (e) {
-      // FTS 可能已存在
-    }
-
     this.log.info('[algo-memory] 数据库初始化完成:', dbPath);
     this.cleanupInterval = setInterval(() => this.cleanup(), 24 * 60 * 60 * 1000);
   }
 
-  async store(agentId: string, messages: any[]): Promise<void> {
-    if (!agentId || !messages?.length || !this.db) return;
+  async store(AgentId: string, messages: any[]): Promise<void> {
+    if (!AgentId || !messages?.length || !this.db) return;
 
     for (const msg of messages) {
       if (msg.role !== 'user' || isNoise(msg.content)) continue;
@@ -160,52 +320,69 @@ class MemoryPlugin {
       // 精确查重
       const existing = this.db.prepare(
         'SELECT id, content FROM memories WHERE agent_id = ? AND content_hash = ?'
-      ).get(agentId, contentHash) as { id: string; content: string } | undefined;
+      ).get(AgentId, contentHash) as { id: string; content: string } | undefined;
 
       if (existing) {
         this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?')
           .run(Date.now(), existing.id);
-        this.cache.delete(`recall:${agentId}`);
+        this.cache.delete(`recall:${AgentId}`);
         continue;
       }
 
-      // 智能去重 (Jaccard)
+      // 智能去重 (可选 LLM)
       if (this.config.smartDedup) {
         const similar = this.db.prepare(
           "SELECT id, content FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT 10"
-        ).all(agentId) as { id: string; content: string }[];
+        ).all(AgentId) as { id: string; content: string }[];
 
         for (const s of similar) {
-          const score = jaccardSimilarity(content, s.content);
-          if (score >= 0.98) {
-            // 几乎相同 - 更新
+          // 使用 LLM 判断或本地判断
+          let isDup = false;
+          let score = jaccardSimilarity(content, s.content);
+          
+          if (this.config.threshold.useLlmForDedup && this.llmClient && score >= 0.5 && score < 0.98) {
+            const llmResult = await this.llmClient.isDuplicate(content, s.content);
+            isDup = llmResult.isDuplicate;
+            score = llmResult.similarity;
+          } else if (score >= 0.98) {
+            isDup = true;
+          }
+
+          if (isDup) {
             this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?')
               .run(Date.now(), s.id);
-            this.cache.delete(`recall:${agentId}`);
-            break;
-          } else if (score >= this.config.dedupThreshold) {
-            // 部分相似 - 合并内容
-            const newContent = s.content + ' ' + content;
-            const newKeywords = this.mergeKeywords(s.content, content);
-            this.db.prepare('UPDATE memories SET content = ?, keywords = ?, access_count = access_count + 1, last_accessed = ? WHERE id = ?')
-              .run(newContent, newKeywords, Date.now(), s.id);
-            this.cache.delete(`recall:${agentId}`);
+            this.cache.delete(`recall:${AgentId}`);
             break;
           }
         }
         continue;
       }
 
-      // 新增记录
-      const isCore = isCoreKeyword(content, this.config.coreKeywords);
+      // 判断是否核心记忆 (可选 LLM)
+      let isCore = isCoreKeyword(content, this.config.coreKeywords);
+      let keywords = extractKeywords(content);
+      let importance = isCore ? 1.0 : 0.5;
+
+      if (this.config.threshold.useLlmForCore && this.llmClient && !isCore) {
+        const llmResult = await this.llmClient.isCoreMemory(content);
+        isCore = llmResult.isCore;
+        importance = llmResult.confidence;
+      }
+
+      // 提取关键词 (可选 LLM)
+      if (this.config.threshold.useLlmForExtract && this.llmClient) {
+        keywords = await this.llmClient.extractKeywords(content);
+      }
+
+      // 写入数据库
       const memory = {
         id: generateId(),
-        agent_id: agentId,
+        agent_id: AgentId,
         content,
         type: 'other',
         layer: isCore ? 'core' : 'general',
-        keywords: extractKeywords(content),
-        importance: isCore ? 1.0 : 0.5,
+        keywords,
+        importance,
         access_count: 1,
         created_at: Date.now(),
         last_accessed: Date.now(),
@@ -223,20 +400,13 @@ class MemoryPlugin {
     }
   }
 
-  private mergeKeywords(content1: string, content2: string): string {
-    const kw1 = (extractKeywords(content1) || '').split(',').filter(Boolean);
-    const kw2 = (extractKeywords(content2) || '').split(',').filter(Boolean);
-    const merged = [...new Set([...kw1, ...kw2])];
-    return merged.slice(0, 10).join(',');
-  }
-
-  async recall(agentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
-    const cacheKey = `recall:${agentId}:${query}`;
+  async recall(AgentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
+    const cacheKey = `recall:${AgentId}:${query}`;
     if (this.cache.has(cacheKey)) return this.cache.get(cacheKey)!;
 
     let memories = this.db!.prepare(
       "SELECT * FROM memories WHERE agent_id = ? ORDER BY CASE layer WHEN 'core' THEN 0 ELSE 1 END, importance DESC, access_count DESC LIMIT ?"
-    ).all(agentId, this.config.maxResults * 2) as any[];
+    ).all(AgentId, this.config.maxResults * 2) as any[];
 
     if (this.config.recencyDecay) {
       const halfLife = this.config.recencyHalfLife || 180;
@@ -261,54 +431,50 @@ class MemoryPlugin {
   }
 
   // 工具方法
-  listMemories(agentId: string, limit: number = 20): any[] {
-    return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?').all(agentId, limit);
+  listMemories(AgentId: string, limit: number = 20): any[] {
+    return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?').all(AgentId, limit);
   }
 
-  searchMemories(agentId: string, query: string): any[] {
+  searchMemories(AgentId: string, query: string): any[] {
     const q = `%${query}%`;
-    return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(agentId, q, q);
+    return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(AgentId, q, q);
   }
 
-  getStats(agentId: string): { total: number; core: number; general: number } {
-    const total = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ?').get(agentId) as { count: number };
-    const core = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ? AND layer = "core"').get(agentId) as { count: number };
-    const general = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ? AND layer = "general"').get(agentId) as { count: number };
+  getStats(AgentId: string): { total: number; core: number; general: number } {
+    const total = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ?').get(AgentId) as { count: number };
+    const core = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ? AND layer = "core"').get(AgentId) as { count: number };
+    const general = this.db!.prepare('SELECT COUNT(*) as count FROM memories WHERE agent_id = ? AND layer = "general"').get(AgentId) as { count: number };
     return { total: total.count, core: core.count, general: general.count };
   }
 
-  // 新增: 获取单条记忆
-  getMemory(agentId: string, memoryId: string): any | null {
-    return this.db!.prepare('SELECT * FROM memories WHERE id = ? AND agent_id = ?').get(memoryId, agentId) || null;
+  getMemory(AgentId: string, memoryId: string): any | null {
+    return this.db!.prepare('SELECT * FROM memories WHERE id = ? AND agent_id = ?').get(memoryId, AgentId) || null;
   }
 
-  // 新增: 删除记忆
-  deleteMemory(agentId: string, memoryId: string): boolean {
-    const result = this.db!.prepare('DELETE FROM memories WHERE id = ? AND agent_id = ?').run(memoryId, agentId);
-    this.cache.delete(`recall:${agentId}`);
+  deleteMemory(AgentId: string, memoryId: string): boolean {
+    const result = this.db!.prepare('DELETE FROM memories WHERE id = ? AND agent_id = ?').run(memoryId, AgentId);
+    this.cache.delete(`recall:${AgentId}`);
     return result.changes > 0;
   }
 
-  // 新增: 清空记忆
-  clearMemories(agentId: string, keepCore: boolean = true): number {
+  clearMemories(AgentId: string, keepCore: boolean = true): number {
     let result;
     if (keepCore) {
-      result = this.db!.prepare('DELETE FROM memories WHERE agent_id = ? AND layer != "core"').run(agentId);
+      result = this.db!.prepare('DELETE FROM memories WHERE agent_id = ? AND layer != "core"').run(AgentId);
     } else {
-      result = this.db!.prepare('DELETE FROM memories WHERE agent_id = ?').run(agentId);
+      result = this.db!.prepare('DELETE FROM memories WHERE agent_id = ?').run(AgentId);
     }
-    this.cache.delete(`recall:${agentId}`);
+    this.cache.delete(`recall:${AgentId}`);
     return result.changes;
   }
 
-  // 新增: 更新记忆
-  updateMemory(agentId: string, memoryId: string, content: string): boolean {
+  updateMemory(AgentId: string, memoryId: string, content: string): boolean {
     const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const isCore = isCoreKeyword(safeContent, this.config.coreKeywords);
     const result = this.db!.prepare(
       'UPDATE memories SET content = ?, layer = ?, keywords = ?, importance = ?, last_accessed = ? WHERE id = ? AND agent_id = ?'
-    ).run(safeContent, isCore ? 'core' : 'general', extractKeywords(safeContent), isCore ? 1.0 : 0.5, Date.now(), memoryId, agentId);
-    this.cache.delete(`recall:${agentId}`);
+    ).run(safeContent, isCore ? 'core' : 'general', extractKeywords(safeContent), isCore ? 1.0 : 0.5, Date.now(), memoryId, AgentId);
+    this.cache.delete(`recall:${AgentId}`);
     return result.changes > 0;
   }
 
@@ -323,7 +489,7 @@ class MemoryPlugin {
 const algoMemoryPlugin = {
   id: 'algo-memory',
   name: 'algo-memory',
-  description: '纯算法长期记忆插件 - 0 API / 智能去重 / 时间衰减',
+  description: '纯算法长期记忆插件 - 0 API，可选 LLM 增强',
   kind: 'memory' as const,
 
   register(api: any): void {
@@ -404,7 +570,7 @@ const algoMemoryPlugin = {
       }
     });
 
-    // 工具: memory_get (新增)
+    // 工具: memory_get
     api.registerTool({
       name: 'memory_get',
       label: 'Memory Get',
@@ -428,7 +594,7 @@ const algoMemoryPlugin = {
       }
     });
 
-    // 工具: memory_delete (新增)
+    // 工具: memory_delete
     api.registerTool({
       name: 'memory_delete',
       label: 'Memory Delete',
@@ -452,7 +618,7 @@ const algoMemoryPlugin = {
       }
     });
 
-    // 工具: memory_clear (新增)
+    // 工具: memory_clear
     api.registerTool({
       name: 'memory_clear',
       label: 'Memory Clear',
@@ -476,7 +642,7 @@ const algoMemoryPlugin = {
       }
     });
 
-    // 工具: memory_update (新增)
+    // 工具: memory_update
     api.registerTool({
       name: 'memory_update',
       label: 'Memory Update',
@@ -523,7 +689,7 @@ const algoMemoryPlugin = {
     });
 
     api.onDeactivate(() => plugin.close());
-    log.info('[algo-memory] 插件注册完成, 工具数: 7');
+    log.info('[algo-memory] 插件注册完成, 工具数: 7, LLM: ' + (api.pluginConfig?.llm?.enabled ? '启用' : '关闭'));
   }
 };
 

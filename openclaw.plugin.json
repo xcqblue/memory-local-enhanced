@@ -1,7 +1,7 @@
 {
   "id": "algo-memory",
   "name": "algo-memory",
-  "description": "纯算法长期记忆插件 - 0 API，完全本地运行，无需网络",
+  "description": "纯算法长期记忆插件 - 0 API，可选 LLM 增强",
   "version": "1.0.0",
   "kind": "memory",
   "homepage": "https://github.com/xcqblue/algo-memory",
@@ -39,25 +39,46 @@
         "default": 180,
         "description": "记忆半衰期(天)"
       },
+      "smartDedup": {
+        "type": "boolean",
+        "default": true,
+        "description": "启用智能去重"
+      },
+      "dedupThreshold": {
+        "type": "number",
+        "default": 0.85,
+        "description": "去重阈值"
+      },
       "coreKeywords": {
         "type": "array",
         "items": { "type": "string" },
-        "default": ["记住", "牢记", "重要", "remember", "important"],
-        "description": "自动识别为核心记忆的关键词"
+        "description": "核心记忆关键词"
+      },
+      "llm": {
+        "type": "object",
+        "description": "LLM 配置 (可选)",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false },
+          "provider": { "type": "string", "default": "openai" },
+          "apiKey": { "type": "string", "default": "" },
+          "model": { "type": "string", "default": "gpt-4o-mini" },
+          "baseURL": { "type": "string", "default": "https://api.openai.com/v1" }
+        }
+      },
+      "threshold": {
+        "type": "object",
+        "description": "LLM 阈值配置",
+        "properties": {
+          "useLlmForCore": { "type": "boolean", "default": false, "description": "用LLM判断是否核心记忆" },
+          "useLlmForExtract": { "type": "boolean", "default": false, "description": "用LLM提取关键词" },
+          "useLlmForDedup": { "type": "boolean", "default": false, "description": "用LLM判断是否重复" },
+          "minConfidence": { "type": "number", "default": 0.8, "description": "最低置信度" }
+        }
       }
     }
   },
   "requirements": {
     "node": ">=18.0.0",
     "openclaw": ">=2026.2.0"
-  },
-  "setup": {
-    "notes": [
-      "安装后，在 ~/.openclaw/openclaw.json 中添加配置",
-      "将 algo-memory 添加到 plugins.allow 列表",
-      "设置 plugins.slots.memory = 'algo-memory' (如果要与 memos 共存，需要修改配置)",
-      "重启 Gateway: openclaw gateway restart",
-      "如果 better-sqlite3 编译失败，确保已安装 C++ 构建工具"
-    ]
   }
 }
