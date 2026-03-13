@@ -453,16 +453,16 @@ const algoMemoryPlugin = {
 
     // 工具 (10个)
     const tools = [
-      { name: 'memory_list', desc: '列出记忆', p: { agentId: 'string', limit: 'number' } },
-      { name: 'memory_search', desc: '搜索记忆', p: { agentId: 'string', query: 'string' } },
-      { name: 'memory_stats', desc: '查看统计', p: { agentId: 'string' } },
-      { name: 'memory_get', desc: '获取单条', p: { agentId: 'string', memoryId: 'string' } },
-      { name: 'memory_delete', desc: '删除记忆', p: { agentId: 'string', memoryId: 'string' } },
-      { name: 'memory_delete_bulk', desc: '批量删除', p: { agentId: 'string', memoryIds: { type: 'array', items: { type: 'string' } } } },
-      { name: 'memory_clear', desc: '清空记忆', p: { agentId: 'string', keepCore: 'boolean' } },
-      { name: 'memory_update', desc: '更新记忆', p: { agentId: 'string', memoryId: 'string', content: 'string' } },
-      { name: 'memory_export', desc: '导出记忆', p: { agentId: 'string' } },
-      { name: 'memory_import', desc: '导入记忆', p: { agentId: 'string', memories: { type: 'array' } } }
+      { name: 'algo_memory_list', desc: '列出记忆', p: { agentId: 'string', limit: 'number' } },
+      { name: 'algo_memory_search', desc: '搜索记忆', p: { agentId: 'string', query: 'string' } },
+      { name: 'algo_memory_stats', desc: '查看统计', p: { agentId: 'string' } },
+      { name: 'algo_memory_get', desc: '获取单条', p: { agentId: 'string', memoryId: 'string' } },
+      { name: 'algo_memory_delete', desc: '删除记忆', p: { agentId: 'string', memoryId: 'string' } },
+      { name: 'algo_memory_delete_bulk', desc: '批量删除', p: { agentId: 'string', memoryIds: { type: 'array', items: { type: 'string' } } } },
+      { name: 'algo_memory_clear', desc: '清空记忆', p: { agentId: 'string', keepCore: 'boolean' } },
+      { name: 'algo_memory_update', desc: '更新记忆', p: { agentId: 'string', memoryId: 'string', content: 'string' } },
+      { name: 'algo_memory_export', desc: '导出记忆', p: { agentId: 'string' } },
+      { name: 'algo_memory_import', desc: '导入记忆', p: { agentId: 'string', memories: { type: 'array' } } }
     ];
 
     tools.forEach(tool => {
@@ -473,16 +473,16 @@ const algoMemoryPlugin = {
           try {
             let result;
             switch (tool.name) {
-              case 'memory_list': result = plugin.listMemories(params.agentId, params.limit || 20); break;
-              case 'memory_search': result = plugin.searchMemories(params.agentId, params.query); break;
-              case 'memory_stats': result = plugin.getStats(params.agentId); break;
-              case 'memory_get': result = plugin.getMemory(params.agentId, params.memoryId); break;
-              case 'memory_delete': result = { success: plugin.deleteMemory(params.agentId, params.memoryId) }; break;
-              case 'memory_delete_bulk': result = { deleted: plugin.deleteBulk(params.agentId, params.memoryIds) }; break;
-              case 'memory_clear': result = { deleted: plugin.clearMemories(params.agentId, params.keepCore !== false) }; break;
-              case 'memory_update': result = { success: plugin.updateMemory(params.agentId, params.memoryId, params.content) }; break;
-              case 'memory_export': result = plugin.exportMemories(params.agentId); break;
-              case 'memory_import': result = { imported: plugin.importMemories(params.agentId, params.memories) }; break;
+              case 'algo_memory_list': result = plugin.listMemories(params.agentId, params.limit || 20); break;
+              case 'algo_memory_search': result = plugin.searchMemories(params.agentId, params.query); break;
+              case 'algo_memory_stats': result = plugin.getStats(params.agentId); break;
+              case 'algo_memory_get': result = plugin.getMemory(params.agentId, params.memoryId); break;
+              case 'algo_memory_delete': result = { success: plugin.deleteMemory(params.agentId, params.memoryId) }; break;
+              case 'algo_memory_delete_bulk': result = { deleted: plugin.deleteBulk(params.agentId, params.memoryIds) }; break;
+              case 'algo_memory_clear': result = { deleted: plugin.clearMemories(params.agentId, params.keepCore !== false) }; break;
+              case 'algo_memory_update': result = { success: plugin.updateMemory(params.agentId, params.memoryId, params.content) }; break;
+              case 'algo_memory_export': result = plugin.exportMemories(params.agentId); break;
+              case 'algo_memory_import': result = { imported: plugin.importMemories(params.agentId, params.memories) }; break;
             }
             return { content: [{ type: 'text', text: JSON.stringify(result) }] };
           } catch (err: any) { return { content: [{ type: 'text', text: 'Error: ' + String(err) }], isError: true }; }
