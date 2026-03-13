@@ -40,7 +40,7 @@ const DEFAULT_CONFIG: Config = {
   maxResults: 5,
   maxContextChars: 500,
   cacheEnabled: true,
-  cleanupDays: 90,
+  cleanupDays: 180,
   cleanupDelayHours: 1,
   coreKeywords: [
     '记住', '牢记', '重要', '不要忘记', '记住它', 
