@@ -476,10 +476,6 @@ export class MemoryPlugin {
     // Token 限制
     const limited = this.limitByTokens(validMemories, this.config.maxContextChars);
 
-    // 自动升级频繁访问的记忆为 core (注意: 需要在更新 access_count 之后判断)
-    // 这里不做自动升级，而是让 store 中的更新逻辑来处理
-    // 因为 recall 时只是读取，不应该改变 access_count
-
     // 缓存
     if (this.config.cacheEnabled) {
       this.cache.set(cacheKey, limited);
@@ -654,6 +650,10 @@ export class MemoryPlugin {
   // 设置记忆
   async setCoreMemory(agentId: string, content: string, type: Memory['type'] = 'fact'): Promise<Memory | null> {
     if (!agentId || !content) return null;
+    
+    // 转义内容防止注入
+    const safeContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    
     const memory: Memory = {
       id: generateId(),
       agent_id: agentId,
@@ -675,19 +675,19 @@ export class MemoryPlugin {
 
     const transaction = this.db.transaction(() => {
       insertMemory.run(
-        memory.id, memory.agent_id, memory.content, memory.type, memory.layer,
+        memory.id, memory.agent_id, safeContent, memory.type, memory.layer,
         memory.keywords, memory.importance, memory.access_count,
         memory.created_at, memory.last_accessed, memory.content_hash
       );
       
       // 插入 FTS 索引
       this.db.prepare('INSERT INTO memories_fts (id, content, keywords) VALUES (?, ?, ?)')
-        .run(memory.id, content, memory.keywords);
+        .run(memory.id, safeContent, memory.keywords);
     });
     
     transaction();
     
-    return memory;
+    return { ...memory, content: safeContent };
   }
 
   // 关闭
