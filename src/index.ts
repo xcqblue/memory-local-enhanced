@@ -621,6 +621,105 @@ export class MemoryPlugin {
     return result.changes;
   }
 
+  // 从 OpenClaw 内置记忆导入
+  async importFromOpenClaw(agentId?: string): Promise<{ stored: number; skipped: number; merged: number; errors: number }> {
+    const openclawPath = path.join(process.cwd(), '.openclaw', 'agents');
+    const stats = { stored: 0, skipped: 0, merged: 0, errors: 0 };
+    
+    if (!fs.existsSync(openclawPath)) {
+      console.log('[Memory] OpenClaw agents 目录不存在');
+      return stats;
+    }
+
+    // 获取所有 agent 目录
+    const agentDirs = fs.readdirSync(openclawPath).filter(d => {
+      const agentPath = path.join(openclawPath, d);
+      return fs.statSync(agentPath).isDirectory() && d !== 'templates';
+    });
+
+    // 收集所有消息
+    const allMessages: { agentId: string; role: string; content: string }[] = [];
+
+    for (const dir of agentDirs) {
+      // 如果指定了 agentId，跳过其他
+      if (agentId && dir !== agentId) continue;
+
+      const sessionsPath = path.join(openclawPath, dir, 'sessions');
+      if (!fs.existsSync(sessionsPath)) continue;
+
+      // 获取所有 jsonl 文件
+      const files = fs.readdirSync(sessionsPath).filter(f => f.endsWith('.jsonl'));
+
+      for (const file of files) {
+        try {
+          const filePath = path.join(sessionsPath, file);
+          const content = fs.readFileSync(filePath, 'utf-8');
+          const lines = content.trim().split('\n');
+
+          for (const line of lines) {
+          try {
+            const obj = JSON.parse(line);
+            
+            // 处理不同类型的消息
+            let role = '';
+            let content = '';
+            
+            if (obj.type === 'message' && obj.message) {
+              // 新格式: { type: 'message', message: { role, content } }
+              role = obj.message.role;
+              const contentArray = obj.message.content;
+              if (Array.isArray(contentArray)) {
+                // content 是数组，取所有 text 类型
+                content = contentArray.map((c: any) => c.text || c.thinking || '').join('');
+              } else {
+                content = contentArray || '';
+              }
+            } else if (obj.role && obj.content) {
+              // 旧格式: { role, content }
+              role = obj.role;
+              content = typeof obj.content === 'string' ? obj.content : '';
+            }
+            
+            // 只提取 user 和 assistant 消息
+            if (role === 'user' || role === 'assistant') {
+              if (content && content.trim().length > 0 && !isNoise(content)) {
+                allMessages.push({ agentId: dir, role, content: content.trim() });
+              } else {
+                stats.skipped++;
+              }
+            }
+          } catch (e) {
+            stats.errors++;
+          }
+        }
+        } catch (e) {
+          stats.errors++;
+        }
+      }
+    }
+
+    // 批量存储 (不等待每条，收集后一起处理)
+    const contents = new Map<string, string[]>(); // agentId -> contents
+    
+    for (const msg of allMessages) {
+      if (!contents.has(msg.agentId)) {
+        contents.set(msg.agentId, []);
+      }
+      contents.get(msg.agentId)!.push(msg.content);
+    }
+
+    // 逐条存储 (store 内部会处理去重)
+    for (const [agentId, msgs] of contents) {
+      for (const content of msgs) {
+        await this.store(agentId, [{ role: 'user', content }]);
+        stats.stored++;
+      }
+    }
+
+    console.log(`[Memory] 导入完成: 新增=${stats.stored}, 跳过=${stats.skipped}, 合并=${stats.merged}, 错误=${stats.errors}`);
+    return stats;
+  }
+
   // 标记为核心记忆 (core layer)
   async markAsCore(memoryId: string): Promise<boolean> {
     if (!memoryId) return false;
@@ -1370,6 +1469,22 @@ export async function onload(context: any): Promise<void> {
           execute: async () => {
             memoryPlugin.bumpVersion();
             return { type: 'text', content: '版本号已更新' };
+          }
+        },
+        'import-openclaw': {
+          description: '从OpenClaw内置记忆导入 - 扫描agents目录导入对话历史',
+          aliases: ['import', '导入', '迁移'],
+          options: [
+            { name: 'agent', alias: 'a', description: 'Agent ID (不填则导入所有)' }
+          ],
+          examples: [
+            'memory import-openclaw',
+            'memory import-openclaw -a coder',
+            '导入 coder 的对话历史'
+          ],
+          execute: async (opts: any) => {
+            const result = await memoryPlugin.importFromOpenClaw(opts.agent);
+            return { type: 'text', content: `导入完成!\n新增: ${result.stored}\n跳过: ${result.skipped}\n合并: ${result.merged}\n错误: ${result.errors}` };
           }
         }
       }
