@@ -2,7 +2,7 @@
   "name": "algo-memory",
   "version": "1.0.0",
   "description": "纯算法长期记忆插件 - 0 API / 可选 LLM 增强",
-  "main": "src/index.js",
+  "main": "src/index.ts",
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch"
@@ -19,10 +19,7 @@
     "typescript": "^5.0.0"
   },
   "openclaw": {
-    "plugins": {
-      "slots": {
-        "memory": "algo-memory"
-      }
-    }
+    "id": "algo-memory",
+    "extensions": ["./src/index.ts"]
   }
 }
