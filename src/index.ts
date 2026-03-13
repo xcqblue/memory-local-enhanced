@@ -341,13 +341,15 @@ export class MemoryPlugin {
           temperature: 0.3
         };
       } else if (provider === 'minimax') {
-        // MiniMax 格式
-        url = `${baseURL}/text/chatcompletion_pro`;
+        // MiniMax 格式 (支持 v1 和 v2)
+        const endpoint = baseURL.includes('/v2') ? '/text/chatcompletion_v2' : '/text/chatcompletion_pro';
+        url = `${baseURL}${endpoint}`;
         headers['Authorization'] = `Bearer ${apiKey}`;
         body = {
           model: model,
           messages: [{ role: 'user', content: prompt }],
-          temperature: 0.3
+          temperature: 0.3,
+          max_tokens: 1024
         };
       } else {
         console.warn(`[Memory] 不支持的 LLM provider: ${provider}`);
