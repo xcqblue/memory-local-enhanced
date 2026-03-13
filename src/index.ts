@@ -280,9 +280,6 @@ export class MemoryPlugin {
       this.db.prepare(
         'UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?'
       ).run(Date.now(), existing.id);
-      
-      // 检查是否需要升级为 core
-      this.promoteToCore(agentId, existing.id);
     } else {
       // 写入新记忆 (使用事务保证一致性)
       const memory: Memory = {
@@ -586,15 +583,15 @@ export class MemoryPlugin {
     return true;
   }
 
-  // 升级为 core 记忆 (基于访问频率)
+  // 升级为 core 记忆 (手动调用)
   async promoteToCore(agentId: string, memoryId: string): Promise<boolean> {
     const memory = this.db.prepare('SELECT * FROM memories WHERE id = ? AND agent_id = ?')
       .get(memoryId, agentId) as Memory | undefined;
     
-    if (memory && memory.access_count >= 5) {
+    if (memory) {
       this.db.prepare('UPDATE memories SET layer = "core", importance = 1.0 WHERE id = ?').run(memoryId);
       this.invalidateCache(agentId);
-      console.log(`[Memory] 记忆 ${memoryId} 已升级为 core`);
+      console.log(`[Memory] 记忆 ${memoryId} 已手动升级为 core`);
       return true;
     }
     return false;
