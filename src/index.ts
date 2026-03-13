@@ -1149,13 +1149,19 @@ export async function onload(context: any): Promise<void> {
   const cli = context.cli;
   if (cli) {
     cli.register('memory', {
-      description: '记忆管理命令',
+      description: 'algo-memory 记忆管理 - 查看/搜索/删除记忆，统计清理等',
       commands: {
         list: {
-          description: '列出记忆 (带详细信息)',
+          description: '列出某Agent的记忆 - 查看记忆列表',
+          aliases: ['ls', '列出', '查看记忆'],
           options: [
-            { name: 'agent', alias: 'a', description: 'Agent ID' },
-            { name: 'limit', alias: 'l', defaultValue: 20 }
+            { name: 'agent', alias: 'a', description: 'Agent ID (必填)', examples: ['agent_001', 'my-agent'] },
+            { name: 'limit', alias: 'l', defaultValue: 20, description: '显示数量', examples: ['10', '50'] }
+          ],
+          examples: [
+            'memory list -a agent_001',
+            '查看 agent001 的记忆',
+            '列出我的记忆'
           ],
           execute: async (opts: any) => {
             if (!opts.agent) {
@@ -1170,9 +1176,14 @@ export async function onload(context: any): Promise<void> {
           }
         },
         'get-detail': {
-          description: '查看单条记忆详情',
+          description: '查看单条记忆详情 - 输入记忆ID查看完整内容',
+          aliases: ['detail', '详情', '查看'],
           options: [
-            { name: 'id', alias: 'i', required: true, description: '记忆 ID' }
+            { name: 'id', alias: 'i', required: true, description: '记忆 ID', examples: ['memory_abc123'] }
+          ],
+          examples: [
+            'memory get-detail -i memory_abc123',
+            '查看这条记忆的详情'
           ],
           execute: async (opts: any) => {
             if (!opts.id) {
@@ -1197,10 +1208,15 @@ export async function onload(context: any): Promise<void> {
           }
         },
         search: {
-          description: '搜索记忆',
+          description: '搜索记忆 - 按关键词搜索Agent的记忆',
+          aliases: ['find', '查找', '搜索', '找'],
           options: [
-            { name: 'agent', alias: 'a', description: 'Agent ID' },
-            { name: 'query', alias: 'q', required: true, description: '搜索关键词' }
+            { name: 'agent', alias: 'a', description: 'Agent ID (必填)' },
+            { name: 'query', alias: 'q', required: true, description: '搜索关键词', examples: ['喜欢', '蓝色', '密码'] }
+          ],
+          examples: [
+            'memory search -a agent_001 -q 蓝色',
+            '搜索 agent001 关于蓝色的记忆'
           ],
           execute: async (opts: any) => {
             if (!opts.agent) {
@@ -1211,9 +1227,15 @@ export async function onload(context: any): Promise<void> {
           }
         },
         stats: {
-          description: '查看统计',
+          description: '查看记忆统计 - 统计记忆数量、类型、访问次数等',
+          aliases: ['stat', '统计', '数量', '信息'],
           options: [
-            { name: 'agent', alias: 'a', description: 'Agent ID (不填则全局)' }
+            { name: 'agent', alias: 'a', description: 'Agent ID (不填则查全局)' }
+          ],
+          examples: [
+            'memory stats',
+            'memory stats -a agent_001',
+            '查看我的记忆统计'
           ],
           execute: async (opts: any) => {
             const stats = memoryPlugin.getStats(opts.agent || undefined);
@@ -1221,9 +1243,14 @@ export async function onload(context: any): Promise<void> {
           }
         },
         'delete-agent': {
-          description: '删除 Agent 及记忆',
+          description: '删除Agent及所有记忆 - 删除某个Agent的全部记忆',
+          aliases: ['del-agent', '删除Agent', '清除'],
           options: [
-            { name: 'agent', alias: 'a', required: true, description: 'Agent ID' }
+            { name: 'agent', alias: 'a', required: true, description: 'Agent ID (必填)' }
+          ],
+          examples: [
+            'memory delete-agent -a agent_001',
+            '删除 agent001 的所有记忆'
           ],
           execute: async (opts: any) => {
             if (!opts.agent) {
@@ -1234,9 +1261,14 @@ export async function onload(context: any): Promise<void> {
           }
         },
         'delete-memory': {
-          description: '删除单条记忆',
+          description: '删除单条记忆 - 根据记忆ID删除',
+          aliases: ['del', '删除', '移除'],
           options: [
             { name: 'id', alias: 'i', required: true, description: '记忆 ID' }
+          ],
+          examples: [
+            'memory delete-memory -i memory_abc123',
+            '删除这条记忆'
           ],
           execute: async (opts: any) => {
             if (!opts.id) {
@@ -1250,10 +1282,15 @@ export async function onload(context: any): Promise<void> {
           }
         },
         'update-memory': {
-          description: '更新单条记忆内容',
+          description: '更新记忆内容 - 修改某条记忆的内容',
+          aliases: ['edit', '修改', '编辑'],
           options: [
             { name: 'id', alias: 'i', required: true, description: '记忆 ID' },
             { name: 'content', alias: 'c', required: true, description: '新内容' }
+          ],
+          examples: [
+            'memory update-memory -i memory_abc123 -c 新内容',
+            '修改这条记忆的内容'
           ],
           execute: async (opts: any) => {
             if (!opts.id || !opts.content) {
@@ -1267,14 +1304,24 @@ export async function onload(context: any): Promise<void> {
           }
         },
         cleanup: {
-          description: '清理过期记忆',
+          description: '清理过期记忆 - 清理超过180天的普通记忆',
+          aliases: ['clean', '清理', '清除过期'],
+          examples: [
+            'memory cleanup',
+            '清理过期记忆'
+          ],
           execute: async () => {
             const count = await memoryPlugin.cleanupExpired();
             return { type: 'text', content: `已清理 ${count} 条过期记忆` };
           }
         },
         'check-update': {
-          description: '检查 GitHub 是否有新版本',
+          description: '检查更新 - 检查GitHub是否有新版本',
+          aliases: ['version', '版本', '检查版本'],
+          examples: [
+            'memory check-update',
+            '检查是否有新版本'
+          ],
           execute: async () => {
             const result = await memoryPlugin.checkUpdate();
             if (result.hasUpdate) {
@@ -1284,16 +1331,26 @@ export async function onload(context: any): Promise<void> {
           }
         },
         update: {
-          description: '从 GitHub 更新插件',
+          description: '更新插件 - 从GitHub拉取最新代码',
+          aliases: ['upgrade', '升级', '更新'],
+          examples: [
+            'memory update',
+            '更新插件到最新版本'
+          ],
           execute: async () => {
             const result = await memoryPlugin.updateFromGitHub();
             return { type: 'text', content: result.message };
           }
         },
         'update-file': {
-          description: '从本地文件更新插件',
+          description: '从文件更新 - 从本地文件更新插件',
+          aliases: ['file', '文件更新'],
           options: [
             { name: 'path', alias: 'p', required: true, description: '文件路径' }
+          ],
+          examples: [
+            'memory update-file -p ./algo-memory.zip',
+            '从文件更新插件'
           ],
           execute: async (opts: any) => {
             if (!opts.path) {
@@ -1304,7 +1361,12 @@ export async function onload(context: any): Promise<void> {
           }
         },
         'bump-version': {
-          description: '手动增加版本后缀 (当天多次更新时使用)',
+          description: '增加版本后缀 - 同一天多次发布时使用',
+          aliases: ['bump', '版本号', '更新版本'],
+          examples: [
+            'memory bump-version',
+            '增加版本号'
+          ],
           execute: async () => {
             memoryPlugin.bumpVersion();
             return { type: 'text', content: '版本号已更新' };
