@@ -425,8 +425,9 @@ export class MemoryPlugin {
     }
 
     // 查缓存 (限制 query 长度避免 key 过长)
-    const queryHash = hashContent(query.slice(0, 100));
-    const cacheKey = `recall:${agentId}:${queryHash}`;
+    // 注意: 空 query 使用特殊 key 避免冲突
+    const queryKey = query.trim() ? hashContent(query.slice(0, 100)) : 'empty';
+    const cacheKey = `recall:${agentId}:${queryKey}`;
     if (this.config.cacheEnabled) {
       const cached = this.cache.get(cacheKey);
       if (cached) {
@@ -578,13 +579,15 @@ export class MemoryPlugin {
   }
 
   // 标记为核心记忆 (core layer)
-  async markAsCore(memoryId: string): Promise<void> {
-    this.db.prepare('UPDATE memories SET layer = "core", importance = 1.0 WHERE id = ?').run(memoryId);
-    // 清理相关缓存
+  async markAsCore(memoryId: string): Promise<boolean> {
+    if (!memoryId) return false;
+    
     const memory = this.db.prepare('SELECT agent_id FROM memories WHERE id = ?').get(memoryId) as { agent_id: string } | undefined;
-    if (memory) {
-      this.invalidateCache(memory.agent_id);
-    }
+    if (!memory || !memory.agent_id) return false;
+    
+    this.db.prepare('UPDATE memories SET layer = "core", importance = 1.0 WHERE id = ?').run(memoryId);
+    this.invalidateCache(memory.agent_id);
+    return true;
   }
 
   // 升级为 core 记忆 (基于访问频率)
@@ -624,6 +627,7 @@ export class MemoryPlugin {
 
   // 列出记忆
   listMemories(agentId: string, limit = 20, offset = 0): Memory[] {
+    if (!agentId) return [];
     return this.db.prepare(`
       SELECT * FROM memories WHERE agent_id = ? 
       ORDER BY last_accessed DESC LIMIT ? OFFSET ?
@@ -632,6 +636,7 @@ export class MemoryPlugin {
 
   // 搜索记忆 (FTS5)
   searchMemories(agentId: string, query: string, limit = 10): Memory[] {
+    if (!agentId) return [];
     return this.db.prepare(`
       SELECT m.* FROM memories m
       WHERE m.agent_id = ? AND (
@@ -645,7 +650,8 @@ export class MemoryPlugin {
   }
 
   // 设置记忆
-  async setCoreMemory(agentId: string, content: string, type: Memory['type'] = 'fact'): Promise<Memory> {
+  async setCoreMemory(agentId: string, content: string, type: Memory['type'] = 'fact'): Promise<Memory | null> {
+    if (!agentId || !content) return null;
     const memory: Memory = {
       id: generateId(),
       agent_id: agentId,
