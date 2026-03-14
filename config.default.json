@@ -60,16 +60,20 @@
     "defaultScope": "agent"
   },
   "llm": {
-    "enabled": false,
-    "provider": "openai",
+    "enabled": true,
+    "provider": "auto",
     "apiKey": "",
-    "model": "gpt-4o-mini",
-    "baseURL": "https://api.openai.com/v1"
+    "model": "",
+    "baseURL": ""
   },
   "threshold": {
     "useLlmForCore": false,
     "useLlmForExtract": false,
     "useLlmForDedup": false,
-    "minConfidence": 0.8
+    "minConfidence": 0.8,
+    "lengthForCore": 100,
+    "lengthForExtract": 200,
+    "dedupUncertaintyMin": 0.5,
+    "dedupUncertaintyMax": 0.98
   }
 }
