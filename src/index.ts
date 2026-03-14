@@ -1,7 +1,8 @@
 /**
- * algo-memory v1.8.0
+ * algo-memory v1.9.0
  * 纯算法长期记忆插件 - 0 API / 可选 LLM 增强
  * 支持多语言: zh/en/ja/ko/es/fr/de
+ * 支持 FTS5 全文搜索
  */
 
 import { Type } from '@sinclair/typebox';
@@ -342,6 +343,7 @@ class MemoryPlugin {
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
+    this.db.pragma('synchronous = NORMAL');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, scope TEXT DEFAULT 'agent',
@@ -357,6 +359,36 @@ class MemoryPlugin {
       CREATE INDEX IF NOT EXISTS idx_agent_tier_importance ON memories(agent_id, tier, importance DESC);
       CREATE INDEX IF NOT EXISTS idx_agent_last_accessed ON memories(agent_id, last_accessed DESC);
     `);
+    
+    // 创建 FTS5 虚拟表用于全文搜索
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+          id, content, keywords, content='memories', content_rowid='rowid'
+        );
+      `);
+      // 创建触发器保持 FTS 同步
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+          INSERT INTO memories_fts(rowid, id, content, keywords) 
+          VALUES (new.rowid, new.id, new.content, new.keywords);
+        END;
+        CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+          INSERT INTO memories_fts(memories_fts, rowid, id, content, keywords) 
+          VALUES('delete', old.rowid, old.id, old.content, old.keywords);
+        END;
+        CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+          INSERT INTO memories_fts(memories_fts, rowid, id, content, keywords) 
+          VALUES('delete', old.rowid, old.id, old.content, old.keywords);
+          INSERT INTO memories_fts(rowid, id, content, keywords) 
+          VALUES (new.rowid, new.id, new.content, new.keywords);
+        END;
+      `);
+      this.log.info('[algo-memory] FTS5 全文搜索已启用');
+    } catch (err: any) {
+      this.log.warn('[algo-memory] FTS5 创建失败，使用备用搜索:', err.message);
+    }
+    
     this.log.info('[algo-memory] 数据库初始化:', dbPath);
     this.log.info(`[algo-memory] 每轮最多写入: ${this.config.capturePerTurn} 条`);
     this.cleanupInterval = setInterval(() => this.cleanup(), 24 * 60 * 60 * 1000);
@@ -368,7 +400,24 @@ class MemoryPlugin {
       this.log.warn('[algo-memory] store 失败: agentId 为空');
       AgentId = 'default';
     }
-    if (!messages?.length || !this.db) return;
+    if (!messages?.length || !this.db) {
+      this.log.warn('[algo-memory] store 失败: 无消息或数据库未初始化');
+      return;
+    }
+    
+    // 错误恢复：数据库连接检查
+    try {
+      this.db.prepare('SELECT 1').get();
+    } catch (err) {
+      this.log.error('[algo-memory] 数据库连接失败，尝试重连:', err);
+      try {
+        this.db = new Database(this.dbPath);
+        this.db.pragma('journal_mode = WAL');
+      } catch (reconnectErr) {
+        this.log.error('[algo-memory] 数据库重连失败:', reconnectErr);
+        return;
+      }
+    }
     
     // 边界情况处理：消息过长时截断
     const maxMessageLength = 10000;
@@ -383,6 +432,7 @@ class MemoryPlugin {
     const maxCapture = this.config.capturePerTurn || 3;
     const storeStartTime = Date.now();
     
+    try {
     for (const msg of messages) {
       if (captured >= maxCapture) break;
       if (msg.role !== 'user') continue;
@@ -468,6 +518,9 @@ class MemoryPlugin {
     if (captured > 0) {
       this.log.info(`[algo-memory] 存储完成, 新增: ${captured}, agentId: ${AgentId}, 耗时: ${storeDuration}ms`);
     }
+    } catch (err) {
+      this.log.error('[algo-memory] store 操作失败:', err);
+    }
   }
 
   private updateTier(memoryId: string): void {
@@ -539,7 +592,27 @@ class MemoryPlugin {
 
   // 工具
   listMemories(AgentId: string, limit: number = 20): any[] { return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY tier, importance DESC, created_at DESC LIMIT ?').all(AgentId, limit); }
-  searchMemories(AgentId: string, query: string): any[] { const q = `%${query}%`; return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(AgentId, q, q); }
+  searchMemories(AgentId: string, query: string): any[] {
+    try {
+      // 尝试使用 FTS5 全文搜索
+      const ftsQuery = query.replace(/[^\w\s\u4e00-\u9fa5]/g, ' ').trim().split(/\s+/).map((w: string) => `"${w}"*`).join(' OR ');
+      if (ftsQuery) {
+        const results = this.db!.prepare(`
+          SELECT m.* FROM memories m
+          JOIN memories_fts fts ON m.id = fts.id
+          WHERE m.agent_id = ? AND memories_fts MATCH ?
+          ORDER BY bm25(memories_fts) DESC, m.importance DESC
+          LIMIT 20
+        `).all(AgentId, ftsQuery);
+        if (results.length > 0) return results;
+      }
+    } catch (err) {
+      this.log.warn('[algo-memory] FTS5 搜索失败，使用备用:', err);
+    }
+    // 备用：LIKE 查询
+    const q = `%${query}%`;
+    return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(AgentId, q, q);
+  }
   getStats(AgentId: string): { total: number; core: number; working: number; peripheral: number; general: number } {
     const total = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ?').get(AgentId) as { c: number }).c;
     const core = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND tier = "core"').get(AgentId) as { c: number }).c;
