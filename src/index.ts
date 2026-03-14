@@ -1,9 +1,10 @@
 /**
- * algo-memory v2.1.0
- * 纯算法长期记忆插件 - 默认启用 LLM / 支持多模型
+ * algo-memory v2.2.0
+ * 纯算法长期记忆插件 - 默认启用LLM / 支持多模型
  * 支持多语言: zh/en/ja/ko/es/fr/de
  * 支持 FTS5 全文搜索
  * 支持国内主流模型: MiniMax/百炼/DeepSeek/Kimi/智谱/腾讯/百度
+ * 默认启用Agent隔离模式，支持配置跨Agent查看
  */
 
 import { Type } from '@sinclair/typebox';
@@ -37,8 +38,12 @@ interface Config {
   hardMinScore: { enabled: boolean; threshold: number };
   // 三层晋升
   tier: { enabled: boolean; coreThreshold: number; peripheralThreshold: number; ageDays: number };
-  // 多 Scope
-  scopes: { enabled: boolean; defaultScope: string };
+  // 多 Scope 隔离
+  scopes: { 
+    enabled: boolean;           // 是否启用隔离模式
+    defaultScope: string;       // 默认作用域
+    visibleAgents: string[];    // 允许查看的Agent列表，空数组表示只能看自己
+  };
   // 架构优化
   capturePerTurn: number; // 每轮最多写入数
   // LLM
@@ -86,7 +91,11 @@ const DEFAULT_CONFIG: Config = {
   // 三层晋升
   tier: { enabled: false, coreThreshold: 10, peripheralThreshold: 0.15, ageDays: 60 },
   // Scope
-  scopes: { enabled: false, defaultScope: 'agent' },
+  scopes: { 
+    enabled: true, 
+    defaultScope: 'agent',
+    visibleAgents: []  // 允许查看的Agent列表，空数组=只能看自己，["*"]=看全部
+  },
   // 架构优化
   capturePerTurn: 3, // 每轮最多写入3条
   // LLM - 默认启用，支持多种模型
@@ -514,6 +523,24 @@ class MemoryPlugin {
     this.cleanupInterval = setInterval(() => this.cleanup(), 24 * 60 * 60 * 1000);
   }
 
+  // 获取当前 Agent 可见的 Agent 列表（用于跨Agent查询）
+  private getVisibleAgentIds(AgentId: string): string[] {
+    const { scopes } = this.config;
+    // 如果未启用隔离模式，返回包含所有Agent的通配符
+    if (!scopes.enabled) return ['%'];
+    
+    // 如果配置了 visibleAgents
+    if (scopes.visibleAgents && scopes.visibleAgents.length > 0) {
+      // 如果包含 *，返回所有
+      if (scopes.visibleAgents.includes('*')) return ['%'];
+      // 返回配置的列表 + 自己的
+      return [AgentId, ...scopes.visibleAgents];
+    }
+    
+    // 默认只能看自己
+    return [AgentId];
+  }
+
   async store(AgentId: string, messages: any[]): Promise<void> {
     // 边界情况处理
     if (!AgentId) {
@@ -669,7 +696,16 @@ class MemoryPlugin {
       return this.cache.get(cacheKey)!;
     }
 
-    let memories = this.db!.prepare("SELECT * FROM memories WHERE agent_id = ? ORDER BY CASE tier WHEN 'core' THEN 0 WHEN 'working' THEN 1 ELSE 2 END, importance DESC, access_count DESC LIMIT ?").all(AgentId, this.config.maxResults * 3) as any[];
+    let visibleAgentIds = this.getVisibleAgentIds(AgentId);
+    let memories;
+    if (visibleAgentIds.includes('%')) {
+      // 可以看全部
+      memories = this.db!.prepare("SELECT * FROM memories ORDER BY CASE tier WHEN 'core' THEN 0 WHEN 'working' THEN 1 ELSE 2 END, importance DESC, access_count DESC LIMIT ?").all(this.config.maxResults * 3) as any[];
+    } else {
+      // 只能看指定的几个
+      const placeholders = visibleAgentIds.map(() => '?').join(',');
+      memories = this.db!.prepare(`SELECT * FROM memories WHERE agent_id IN (${placeholders}) ORDER BY CASE tier WHEN 'core' THEN 0 WHEN 'working' THEN 1 ELSE 2 END, importance DESC, access_count DESC LIMIT ?`).all(...visibleAgentIds, this.config.maxResults * 3) as any[];
+    }
 
     if (this.config.recencyDecay) {
       const halfLife = this.config.recencyHalfLife || 180;
@@ -717,21 +753,42 @@ class MemoryPlugin {
   }
 
   // 工具
-  listMemories(AgentId: string, limit: number = 20): any[] { if (!this.db) return []; return this.db.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY tier, importance DESC, created_at DESC LIMIT ?').all(AgentId, limit); }
+  listMemories(AgentId: string, limit: number = 20): any[] { 
+    if (!this.db) return []; 
+    const visibleAgentIds = this.getVisibleAgentIds(AgentId);
+    if (visibleAgentIds.includes('%')) {
+      return this.db.prepare('SELECT * FROM memories ORDER BY tier, importance DESC, created_at DESC LIMIT ?').all(limit) as any[];
+    }
+    const placeholders = visibleAgentIds.map(() => '?').join(',');
+    return this.db.prepare(`SELECT * FROM memories WHERE agent_id IN (${placeholders}) ORDER BY tier, importance DESC, created_at DESC LIMIT ?`).all(...visibleAgentIds, limit) as any[];
+  }
   searchMemories(AgentId: string, query: string): any[] {
     if (!this.db) return [];
+    const visibleAgentIds = this.getVisibleAgentIds(AgentId);
     
     try {
       // 尝试使用 FTS5 全文搜索
       const ftsQuery = query.replace(/[^\w\s\u4e00-\u9fa5]/g, ' ').trim().split(/\s+/).map((w: string) => `"${w}"*`).join(' OR ');
       if (ftsQuery) {
-        const results = this.db!.prepare(`
-          SELECT m.* FROM memories m
-          JOIN memories_fts fts ON m.id = fts.id
-          WHERE m.agent_id = ? AND memories_fts MATCH ?
-          ORDER BY bm25(memories_fts) DESC, m.importance DESC
-          LIMIT 20
-        `).all(AgentId, ftsQuery);
+        let results;
+        if (visibleAgentIds.includes('%')) {
+          results = this.db!.prepare(`
+            SELECT m.* FROM memories m
+            JOIN memories_fts fts ON m.id = fts.id
+            WHERE memories_fts MATCH ?
+            ORDER BY bm25(memories_fts) DESC, m.importance DESC
+            LIMIT 20
+          `).all(ftsQuery);
+        } else {
+          const placeholders = visibleAgentIds.map(() => '?').join(',');
+          results = this.db!.prepare(`
+            SELECT m.* FROM memories m
+            JOIN memories_fts fts ON m.id = fts.id
+            WHERE m.agent_id IN (${placeholders}) AND memories_fts MATCH ?
+            ORDER BY bm25(memories_fts) DESC, m.importance DESC
+            LIMIT 20
+          `).all(...visibleAgentIds, ftsQuery);
+        }
         if (results.length > 0) return results;
       }
     } catch (err) {
@@ -739,14 +796,28 @@ class MemoryPlugin {
     }
     // 备用：LIKE 查询
     const q = `%${query}%`;
-    return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(AgentId, q, q);
+    if (visibleAgentIds.includes('%')) {
+      return this.db!.prepare('SELECT * FROM memories WHERE (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(q, q) as any[];
+    }
+    const placeholders = visibleAgentIds.map(() => '?').join(',');
+    return this.db!.prepare(`SELECT * FROM memories WHERE agent_id IN (${placeholders}) AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20`).all(...visibleAgentIds, q, q) as any[];
   }
   getStats(AgentId: string): { total: number; core: number; working: number; peripheral: number; general: number } {
     if (!this.db) return { total: 0, core: 0, working: 0, peripheral: 0, general: 0 };
-    const total = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ?').get(AgentId) as { c: number }).c;
-    const core = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND tier = ?').get(AgentId, 'core') as { c: number }).c;
-    const peripheral = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND tier = ?').get(AgentId, 'peripheral') as { c: number }).c;
-    const general = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND layer = ?').get(AgentId, 'general') as { c: number }).c;
+    const visibleAgentIds = this.getVisibleAgentIds(AgentId);
+    let total, core, peripheral, general;
+    if (visibleAgentIds.includes('%')) {
+      total = (this.db.prepare('SELECT COUNT(*) as c FROM memories').get() as { c: number }).c;
+      core = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE tier = ?').get('core') as { c: number }).c;
+      peripheral = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE tier = ?').get('peripheral') as { c: number }).c;
+      general = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE layer = ?').get('general') as { c: number }).c;
+    } else {
+      const placeholders = visibleAgentIds.map(() => '?').join(',');
+      total = (this.db.prepare(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders})`).get(...visibleAgentIds) as { c: number }).c;
+      core = (this.db.prepare(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders}) AND tier = ?`).get(...visibleAgentIds, 'core') as { c: number }).c;
+      peripheral = (this.db.prepare(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders}) AND tier = ?`).get(...visibleAgentIds, 'peripheral') as { c: number }).c;
+      general = (this.db.prepare(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders}) AND layer = ?`).get(...visibleAgentIds, 'general') as { c: number }).c;
+    }
     return { total, core, working: total - core - peripheral, peripheral, general };
   }
   getMemory(AgentId: string, memoryId: string): any | null { if (!this.db) return null; return this.db.prepare('SELECT * FROM memories WHERE id = ? AND agent_id = ?').get(memoryId, AgentId) || null; }
@@ -762,7 +833,15 @@ class MemoryPlugin {
     return r.changes > 0; 
   }
   
-  exportMemories(AgentId: string): any[] { if (!this.db) return []; return this.db.prepare('SELECT * FROM memories WHERE agent_id = ?').all(AgentId); }
+  exportMemories(AgentId: string): any[] { 
+    if (!this.db) return []; 
+    const visibleAgentIds = this.getVisibleAgentIds(AgentId);
+    if (visibleAgentIds.includes('%')) {
+      return this.db.prepare('SELECT * FROM memories').all() as any[];
+    }
+    const placeholders = visibleAgentIds.map(() => '?').join(',');
+    return this.db.prepare(`SELECT * FROM memories WHERE agent_id IN (${placeholders})`).all(...visibleAgentIds) as any[];
+  }
   importMemories(AgentId: string, memories: any[]): number {
     if (!this.db) return 0;
     let imported = 0;

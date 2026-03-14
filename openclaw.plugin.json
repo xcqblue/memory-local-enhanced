@@ -2,7 +2,7 @@
   "id": "algo-memory",
   "name": "algo-memory",
   "description": "纯算法长期记忆插件 - 默认启用LLM / 支持多模型",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "kind": "memory",
   "homepage": "https://github.com/xcqblue/algo-memory",
   "installDependencies": true,
