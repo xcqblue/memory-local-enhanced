@@ -322,6 +322,7 @@ class LLMClient {
 // ============= 核心类 =============
 class MemoryPlugin {
   private db: Database.Database | null = null;
+  private dbPath: string = '';  // 数据库路径，用于重连
   private cache: LRUCache<string, any>;
   private sessionCache: LRUCache<string, any>;
   private cleanupInterval: NodeJS.Timeout | null = null;
@@ -339,8 +340,8 @@ class MemoryPlugin {
 
   async init(stateDir: string): Promise<void> {
     if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
-    const dbPath = path.join(stateDir, 'memories.db');
-    this.db = new Database(dbPath);
+    this.dbPath = path.join(stateDir, 'memories.db');
+    this.db = new Database(this.dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
     this.db.pragma('synchronous = NORMAL');
