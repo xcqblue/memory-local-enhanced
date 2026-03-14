@@ -533,6 +533,12 @@ class MemoryPlugin {
   }
 
   async recall(AgentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
+    // 数据库连接检查
+    if (!this.db) {
+      this.log.warn('[algo-memory] recall 失败: 数据库未初始化');
+      return { hasMemory: false, memories: [] };
+    }
+    
     const recallStartTime = Date.now();
     if (!shouldRetrieve(query, this.config.adaptiveRetrieval)) return { hasMemory: false, memories: [] };
     // 缓存 key 加入关键配置哈希，确保配置变化时缓存失效
@@ -591,8 +597,10 @@ class MemoryPlugin {
   }
 
   // 工具
-  listMemories(AgentId: string, limit: number = 20): any[] { return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY tier, importance DESC, created_at DESC LIMIT ?').all(AgentId, limit); }
+  listMemories(AgentId: string, limit: number = 20): any[] { if (!this.db) return []; return this.db.prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY tier, importance DESC, created_at DESC LIMIT ?').all(AgentId, limit); }
   searchMemories(AgentId: string, query: string): any[] {
+    if (!this.db) return [];
+    
     try {
       // 尝试使用 FTS5 全文搜索
       const ftsQuery = query.replace(/[^\w\s\u4e00-\u9fa5]/g, ' ').trim().split(/\s+/).map((w: string) => `"${w}"*`).join(' OR ');
@@ -614,17 +622,17 @@ class MemoryPlugin {
     return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(AgentId, q, q);
   }
   getStats(AgentId: string): { total: number; core: number; working: number; peripheral: number; general: number } {
-    const total = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ?').get(AgentId) as { c: number }).c;
-    const core = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND tier = "core"').get(AgentId) as { c: number }).c;
-    const working = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND tier = "working"').get(AgentId) as { c: number }).c;
-    const peripheral = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND tier = "peripheral"').get(AgentId) as { c: number }).c;
-    const general = (this.db!.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND layer = "general"').get(AgentId) as { c: number }).c;
-    return { total, core, working, peripheral, general };
+    if (!this.db) return { total: 0, core: 0, working: 0, peripheral: 0, general: 0 };
+    const total = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ?').get(AgentId) as { c: number }).c;
+    const core = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND tier = ?').get(AgentId, 'core') as { c: number }).c;
+    const peripheral = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND tier = ?').get(AgentId, 'peripheral') as { c: number }).c;
+    const general = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE agent_id = ? AND layer = ?').get(AgentId, 'general') as { c: number }).c;
+    return { total, core, working: total - core - peripheral, peripheral, general };
   }
-  getMemory(AgentId: string, memoryId: string): any | null { return this.db!.prepare('SELECT * FROM memories WHERE id = ? AND agent_id = ?').get(memoryId, AgentId) || null; }
-  deleteMemory(AgentId: string, memoryId: string): boolean { const r = this.db!.prepare('DELETE FROM memories WHERE id = ? AND agent_id = ?').run(memoryId, AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes > 0; }
-  deleteBulk(AgentId: string, memoryIds: string[]): number { const placeholders = memoryIds.map(() => '?').join(','); const r = this.db!.prepare(`DELETE FROM memories WHERE id IN (${placeholders}) AND agent_id = ?`).run(...memoryIds, AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes; }
-  clearMemories(AgentId: string, keepCore: boolean = true): number { let r = keepCore ? this.db!.prepare('DELETE FROM memories WHERE agent_id = ? AND tier != "core"').run(AgentId) : this.db!.prepare('DELETE FROM memories WHERE agent_id = ?').run(AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes; }
+  getMemory(AgentId: string, memoryId: string): any | null { if (!this.db) return null; return this.db.prepare('SELECT * FROM memories WHERE id = ? AND agent_id = ?').get(memoryId, AgentId) || null; }
+  deleteMemory(AgentId: string, memoryId: string): boolean { if (!this.db) return false; const r = this.db.prepare('DELETE FROM memories WHERE id = ? AND agent_id = ?').run(memoryId, AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes > 0; }
+  deleteBulk(AgentId: string, memoryIds: string[]): number { if (!this.db) return 0; const placeholders = memoryIds.map(() => '?').join(','); const r = this.db.prepare(`DELETE FROM memories WHERE id IN (${placeholders}) AND agent_id = ?`).run(...memoryIds, AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes; }
+  clearMemories(AgentId: string, keepCore: boolean = true): number { if (!this.db) return 0; let r = keepCore ? this.db.prepare('DELETE FROM memories WHERE agent_id = ? AND tier != ?').run(AgentId, 'core') : this.db.prepare('DELETE FROM memories WHERE agent_id = ?').run(AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes; }
   updateMemory(AgentId: string, memoryId: string, content: string): boolean { 
     const safe = normalizeText(content).replace(/</g, '&lt;').replace(/>/g, '&gt;'); 
     const isCore = isCoreKeyword(safe, this.config.coreKeywords);
@@ -634,13 +642,14 @@ class MemoryPlugin {
     return r.changes > 0; 
   }
   
-  exportMemories(AgentId: string): any[] { return this.db!.prepare('SELECT * FROM memories WHERE agent_id = ?').all(AgentId); }
+  exportMemories(AgentId: string): any[] { if (!this.db) return []; return this.db.prepare('SELECT * FROM memories WHERE agent_id = ?').all(AgentId); }
   importMemories(AgentId: string, memories: any[]): number {
+    if (!this.db) return 0;
     let imported = 0;
     for (const m of memories) {
       try {
         const tier = getTier(m.importance || 0.5, m.access_count || 1, 0, this.config.tier);
-        this.db!.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+        this.db.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
           m.id || generateId(), AgentId, m.scope || 'global', m.content, m.type || 'other', tier, m.layer || 'general', m.keywords || '', m.importance || 0.5, m.access_count || 1, m.created_at || Date.now(), m.last_accessed || Date.now(), m.content_hash || hashContent(m.content), m.metadata || null
         );
         imported++;
