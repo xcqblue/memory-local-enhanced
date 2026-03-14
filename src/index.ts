@@ -201,48 +201,74 @@ function getTier(importance: number, accessCount: number, daysOld: number, confi
   return 'working';
 }
 
+// 睡眠辅助函数
+function sleep(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+// LLM 调用重试辅助函数
+async function llmCallWithRetry<T>(fn: () => Promise<T>, maxRetries: number = 2, delayMs: number = 1000): Promise<T> {
+  let lastError: any;
+  for (let i = 0; i <= maxRetries; i++) {
+    try { return await fn(); } 
+    catch (err) { lastError = err; if (i < maxRetries) await sleep(delayMs); }
+  }
+  throw lastError;
+}
+
 // LLM 客户端
 class LLMClient {
   private config: Config;
   private log: any;
   constructor(config: Config, log: any) { this.config = config; this.log = log; }
+  
   async isCoreMemory(content: string): Promise<{ isCore: boolean; confidence: number }> {
     const localResult = isCoreKeyword(content, this.config.coreKeywords);
     if (localResult) return { isCore: true, confidence: 1.0 };
     if (!this.config.llm.enabled) return { isCore: false, confidence: 0.5 };
+    
     try {
-      const response = await fetch(`${this.config.llm.baseURL}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
-        body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '判断是否重要需要长期记住。回复JSON: {"isCore": true/false, "confidence": 0-1}' }, { role: 'user', content }], max_tokens: 100, temperature: 0.1 })
-      });
-      return JSON.parse((await response.json()).choices[0].message.content);
-    } catch (err) { this.log.error('[algo-memory] LLM错误:', err); return { isCore: false, confidence: 0.5 }; }
+      const result = await llmCallWithRetry(async () => {
+        const response = await fetch(`${this.config.llm.baseURL}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
+          body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '判断是否重要需要长期记住。回复JSON: {"isCore": true/false, "confidence": 0-1}' }, { role: 'user', content }], max_tokens: 100, temperature: 0.1 })
+        });
+        return JSON.parse((await response.json()).choices[0].message.content);
+      }, 2, 1000);
+      return result;
+    } catch (err) { this.log.error('[algo-memory] LLM isCoreMemory 失败:', err); return { isCore: false, confidence: 0.5 }; }
   }
+  
   async extractKeywords(content: string): Promise<string> {
     const local = extractKeywords(content);
     if (!this.config.llm.enabled) return local;
     try {
-      const response = await fetch(`${this.config.llm.baseURL}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
-        body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '提取关键词，最多10个。回复JSON: {"keywords": ["k1", "k2"]}' }, { role: 'user', content }], max_tokens: 200, temperature: 0.2 })
-      });
-      return JSON.parse((await response.json()).choices[0].message.content).keywords.join(',');
-    } catch (err) { return local; }
+      const result = await llmCallWithRetry(async () => {
+        const response = await fetch(`${this.config.llm.baseURL}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
+          body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '提取关键词，最多10个。回复JSON: {"keywords": ["k1", "k2"]}' }, { role: 'user', content }], max_tokens: 200, temperature: 0.2 })
+        });
+        return JSON.parse((await response.json()).choices[0].message.content).keywords.join(',');
+      }, 2, 1000);
+      return result;
+    } catch (err) { this.log.error('[algo-memory] LLM extractKeywords 失败:', err); return local; }
   }
+  
   async isDuplicate(c1: string, c2: string): Promise<{ isDuplicate: boolean; similarity: number }> {
     const sim = jaccardSimilarity(c1, c2);
     if (sim >= 0.98 || sim < 0.5) return { isDuplicate: sim >= 0.98, similarity: sim };
     if (!this.config.llm.enabled) return { isDuplicate: false, similarity: sim };
     try {
-      const response = await fetch(`${this.config.llm.baseURL}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
-        body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '判断是否重复。回复JSON: {"isDuplicate": true/false, "similarity": 0-1}' }, { role: 'user', content: `内容1: ${c1}\n内容2: ${c2}` }], max_tokens: 100, temperature: 0.1 })
-      });
-      return JSON.parse((await response.json()).choices[0].message.content);
-    } catch (err) { return { isDuplicate: sim >= 0.85, similarity: sim }; }
+      const result = await llmCallWithRetry(async () => {
+        const response = await fetch(`${this.config.llm.baseURL}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
+          body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '判断是否重复。回复JSON: {"isDuplicate": true/false, "similarity": 0-1}' }, { role: 'user', content: `内容1: ${c1}\n内容2: ${c2}` }], max_tokens: 100, temperature: 0.1 })
+        });
+        return JSON.parse((await response.json()).choices[0].message.content);
+      }, 2, 1000);
+      return result;
+    } catch (err) { this.log.error('[algo-memory] LLM isDuplicate 失败:', err); return { isDuplicate: sim >= this.config.dedupThreshold, similarity: sim }; }
   }
 }
 
@@ -282,6 +308,8 @@ class MemoryPlugin {
       CREATE INDEX IF NOT EXISTS idx_tier ON memories(tier);
       CREATE INDEX IF NOT EXISTS idx_scope ON memories(scope);
       CREATE INDEX IF NOT EXISTS idx_agent_hash ON memories(agent_id, content_hash);
+      CREATE INDEX IF NOT EXISTS idx_agent_tier_importance ON memories(agent_id, tier, importance DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_last_accessed ON memories(agent_id, last_accessed DESC);
     `);
     this.log.info('[algo-memory] 数据库初始化:', dbPath);
     this.log.info(`[algo-memory] 每轮最多写入: ${this.config.capturePerTurn} 条`);
@@ -289,7 +317,21 @@ class MemoryPlugin {
   }
 
   async store(AgentId: string, messages: any[]): Promise<void> {
-    if (!AgentId || !messages?.length || !this.db) return;
+    // 边界情况处理
+    if (!AgentId) {
+      this.log.warn('[algo-memory] store 失败: agentId 为空');
+      AgentId = 'default';
+    }
+    if (!messages?.length || !this.db) return;
+    
+    // 边界情况处理：消息过长时截断
+    const maxMessageLength = 10000;
+    messages = messages.map(msg => ({
+      ...msg,
+      content: msg.content?.length > maxMessageLength 
+        ? msg.content.substring(0, maxMessageLength) + '...[截断]' 
+        : msg.content
+    }));
     
     let captured = 0;
     const maxCapture = this.config.capturePerTurn || 3;
@@ -374,6 +416,10 @@ class MemoryPlugin {
       this.db.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(memory.id, memory.agent_id, memory.scope, memory.content, memory.type, memory.tier, memory.layer, memory.keywords, memory.importance, memory.access_count, memory.created_at, memory.last_accessed, memory.content_hash, memory.metadata);
       captured++;
     }
+    // 日志增强：记录存储操作统计
+    if (captured > 0) {
+      this.log.info(`[algo-memory] 存储完成, 新增: ${captured}, agentId: ${AgentId}`);
+    }
   }
 
   private updateTier(memoryId: string): void {
@@ -387,7 +433,9 @@ class MemoryPlugin {
 
   async recall(AgentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
     if (!shouldRetrieve(query, this.config.adaptiveRetrieval)) return { hasMemory: false, memories: [] };
-    const cacheKey = `recall:${AgentId}:${query}`;
+    // 缓存 key 加入关键配置哈希，确保配置变化时缓存失效
+    const configHash = hashContent(`${this.config.maxResults}:${this.config.recencyDecay}:${this.config.recencyHalfLife}`);
+    const cacheKey = `recall:${AgentId}:${configHash}:${query}`;
     if (this.cache.has(cacheKey)) return this.cache.get(cacheKey)!;
 
     let memories = this.db!.prepare("SELECT * FROM memories WHERE agent_id = ? ORDER BY CASE tier WHEN 'core' THEN 0 WHEN 'working' THEN 1 ELSE 2 END, importance DESC, access_count DESC LIMIT ?").all(AgentId, this.config.maxResults * 3) as any[];
