@@ -1,8 +1,9 @@
 /**
- * algo-memory v1.9.1
- * 纯算法长期记忆插件 - 0 API / 可选 LLM 增强
+ * algo-memory v2.0.0
+ * 纯算法长期记忆插件 - 默认启用 LLM / 支持多模型
  * 支持多语言: zh/en/ja/ko/es/fr/de
  * 支持 FTS5 全文搜索
+ * 支持 MiniMax / OpenAI / Anthropic / Google / Cohere / Ollama / SiliconFlow
  */
 
 import { Type } from '@sinclair/typebox';
@@ -41,7 +42,13 @@ interface Config {
   // 架构优化
   capturePerTurn: number; // 每轮最多写入数
   // LLM
-  llm: { enabled: boolean; provider: string; apiKey: string; model: string; baseURL: string };
+  llm: { 
+    enabled: boolean; 
+    provider: string;  // openai, minimax, anthropic, google, cohere, local
+    apiKey: string; 
+    model: string; 
+    baseURL: string;
+  };
   threshold: { 
     useLlmForCore: boolean; 
     useLlmForExtract: boolean; 
@@ -82,8 +89,8 @@ const DEFAULT_CONFIG: Config = {
   scopes: { enabled: false, defaultScope: 'agent' },
   // 架构优化
   capturePerTurn: 3, // 每轮最多写入3条
-  // LLM
-  llm: { enabled: false, provider: 'openai', apiKey: '', model: 'gpt-4o-mini', baseURL: 'https://api.openai.com/v1' },
+  // LLM - 默认启用，支持多种模型
+  llm: { enabled: true, provider: 'auto', apiKey: '', model: '', baseURL: '' },
   threshold: { 
     useLlmForCore: false, 
     useLlmForExtract: false, 
@@ -250,6 +257,78 @@ function getTier(importance: number, accessCount: number, daysOld: number, confi
 
 // 睡眠辅助函数
 function sleep(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+// LLM 模型配置
+const LLM_PROVIDERS = {
+  // MiniMax (默认推荐)
+  minimax: {
+    baseURL: 'https://api.minimax.chat/v1',
+    models: ['abab6.5s-chat', 'abab6.5g-chat', 'abab6s-chat'],
+    defaultModel: 'abab6.5s-chat'
+  },
+  // OpenAI
+  openai: {
+    baseURL: 'https://api.openai.com/v1',
+    models: ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo'],
+    defaultModel: 'gpt-4o-mini'
+  },
+  // Anthropic
+  anthropic: {
+    baseURL: 'https://api.anthropic.com/v1',
+    models: ['claude-3-haiku-20240307', 'claude-3-sonnet-20240229'],
+    defaultModel: 'claude-3-haiku-20240307'
+  },
+  // Google
+  google: {
+    baseURL: 'https://generativelanguage.googleapis.com/v1',
+    models: ['gemini-1.5-flash', 'gemini-1.5-pro'],
+    defaultModel: 'gemini-1.5-flash'
+  },
+  // Cohere
+  cohere: {
+    baseURL: 'https://api.cohere.ai/v1',
+    models: ['command-r', 'command-r-plus'],
+    defaultModel: 'command-r'
+  },
+  // Ollama (本地)
+  ollama: {
+    baseURL: 'http://localhost:11434/v1',
+    models: ['llama2', 'mistral', 'codellama'],
+    defaultModel: 'llama2'
+  },
+  // SiliconFlow (国内)
+  siliconflow: {
+    baseURL: 'https://api.siliconflow.cn/v1',
+    models: ['Qwen/Qwen2-7B-Instruct', 'THUDM/glm-4-9b-chat'],
+    defaultModel: 'Qwen/Qwen2-7B-Instruct'
+  }
+};
+
+// 自动选择 LLM 配置
+function resolveLLMConfig(config: Config['llm']): Config['llm'] {
+  if (!config.enabled) return config;
+  
+  // 如果 provider 是 auto，自动检测
+  if (config.provider === 'auto' || !config.provider) {
+    // 优先使用 MiniMax（国内访问快）
+    return { ...config, provider: 'minimax', ...LLM_PROVIDERS.minimax };
+  }
+  
+  const provider = config.provider.toLowerCase();
+  const providerConfig = LLM_PROVIDERS[provider as keyof typeof LLM_PROVIDERS];
+  
+  if (!providerConfig) {
+    // 未知 provider，回退到 MiniMax
+    return { ...config, provider: 'minimax', ...LLM_PROVIDERS.minimax };
+  }
+  
+  // 使用用户提供的配置
+  return {
+    ...config,
+    baseURL: config.baseURL || providerConfig.baseURL,
+    model: config.model || providerConfig.defaultModel
+  };
+}
 
 // LLM 调用重试辅助函数
 async function llmCallWithRetry<T>(fn: () => Promise<T>, maxRetries: number = 2, delayMs: number = 1000): Promise<T> {
@@ -813,7 +892,10 @@ export default function register(api: any): void {
 
   // 获取用户配置（合并默认配置，这样即使不修改 openclaw.json 也能工作）
   const userConfig = api.pluginConfig || {};
-  const cfg = { ...DEFAULT_CONFIG, ...userConfig };
+  let cfg = { ...DEFAULT_CONFIG, ...userConfig };
+  
+  // 自动解析 LLM 配置（支持多模型）
+  cfg.llm = resolveLLMConfig(cfg.llm);
   
   // 兼容旧配置格式（如果没有 enabled 字段，根据是否有用户配置决定）
   if (userConfig.enabled === undefined && Object.keys(userConfig).length === 0) {
