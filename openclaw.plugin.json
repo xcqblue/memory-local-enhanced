@@ -2,7 +2,7 @@
   "id": "algo-memory",
   "name": "algo-memory",
   "description": "纯算法长期记忆插件 - 0 API / 可选 LLM 增强",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "kind": "memory",
   "homepage": "https://github.com/xcqblue/algo-memory",
   "configSchema": {
@@ -30,7 +30,20 @@
       "tier": { "type": "object", "description": "三层晋升系统", "properties": { "enabled": { "type": "boolean" }, "coreThreshold": { "type": "number" }, "peripheralThreshold": { "type": "number" }, "ageDays": { "type": "number" } } },
       "scopes": { "type": "object", "description": "多Scope隔离", "properties": { "enabled": { "type": "boolean" }, "defaultScope": { "type": "string" } } },
       "llm": { "type": "object", "description": "LLM配置(可选)", "properties": { "enabled": { "type": "boolean" }, "provider": { "type": "string" }, "apiKey": { "type": "string" }, "model": { "type": "string" }, "baseURL": { "type": "string" } } },
-      "threshold": { "type": "object", "description": "LLM阈值配置", "properties": { "useLlmForCore": { "type": "boolean" }, "useLlmForExtract": { "type": "boolean" }, "useLlmForDedup": { "type": "boolean" }, "minConfidence": { "type": "number" } } }
+      "threshold": { 
+        "type": "object", 
+        "description": "LLM阈值配置", 
+        "properties": { 
+          "useLlmForCore": { "type": "boolean", "description": "启用LLM判断核心记忆" }, 
+          "useLlmForExtract": { "type": "boolean", "description": "启用LLM提取关键词" }, 
+          "useLlmForDedup": { "type": "boolean", "description": "启用LLM判断重复" }, 
+          "minConfidence": { "type": "number", "description": "最小置信度" },
+          "lengthForCore": { "type": "number", "default": 100, "description": "触发LLM核心判断的长度阈值" },
+          "lengthForExtract": { "type": "number", "default": 200, "description": "触发LLM关键词提取的长度阈值" },
+          "dedupUncertaintyMin": { "type": "number", "default": 0.5, "description": "去重LLM判断的相似度下限" },
+          "dedupUncertaintyMax": { "type": "number", "default": 0.98, "description": "去重LLM判断的相似度上限" }
+        } 
+      }
     }
   },
   "requirements": { "node": ">=18.0.0", "openclaw": ">=2026.2.0" }

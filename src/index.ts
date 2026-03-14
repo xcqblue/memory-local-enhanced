@@ -40,7 +40,17 @@ interface Config {
   capturePerTurn: number; // 每轮最多写入数
   // LLM
   llm: { enabled: boolean; provider: string; apiKey: string; model: string; baseURL: string };
-  threshold: { useLlmForCore: boolean; useLlmForExtract: boolean; useLlmForDedup: boolean; minConfidence: number };
+  threshold: { 
+    useLlmForCore: boolean; 
+    useLlmForExtract: boolean; 
+    useLlmForDedup: boolean; 
+    minConfidence: number;
+    // 阈值触发配置
+    lengthForCore: number;      // 内容长度超过此值时触发LLM判断核心
+    lengthForExtract: number;   // 内容长度超过此值时触发LLM提取关键词
+    dedupUncertaintyMin: number; // 相似度在此区间时触发LLM去重判断
+    dedupUncertaintyMax: number;
+  };
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -71,7 +81,17 @@ const DEFAULT_CONFIG: Config = {
   capturePerTurn: 3, // 每轮最多写入3条
   // LLM
   llm: { enabled: false, provider: 'openai', apiKey: '', model: 'gpt-4o-mini', baseURL: 'https://api.openai.com/v1' },
-  threshold: { useLlmForCore: false, useLlmForExtract: false, useLlmForDedup: false, minConfidence: 0.8 }
+  threshold: { 
+    useLlmForCore: false, 
+    useLlmForExtract: false, 
+    useLlmForDedup: false, 
+    minConfidence: 0.8,
+    // 阈值触发配置
+    lengthForCore: 100,      // 内容超过100字符时触发LLM判断核心
+    lengthForExtract: 200,    // 内容超过200字符时触发LLM提取关键词
+    dedupUncertaintyMin: 0.5, // 相似度在0.5-0.98区间时触发LLM去重判断
+    dedupUncertaintyMax: 0.98
+  }
 };
 
 // ============= 工具函数 =============
@@ -300,11 +320,14 @@ class MemoryPlugin {
         let isDuplicate = false;
         for (const s of similar) {
           let score = jaccardSimilarity(safeContent, s.content);
-          if (this.config.threshold.useLlmForDedup && this.llmClient && score >= 0.5 && score < 0.98) {
+          // 阈值触发LLM去重判断
+          const { dedupUncertaintyMin, dedupUncertaintyMax } = this.config.threshold;
+          const inUncertaintyZone = score >= dedupUncertaintyMin && score < dedupUncertaintyMax;
+          if (this.config.threshold.useLlmForDedup && this.llmClient && inUncertaintyZone) {
             const r = await this.llmClient.isDuplicate(safeContent, s.content);
             isDuplicate = r.isDuplicate;
           } else {
-            isDuplicate = score >= 0.98;
+            isDuplicate = score >= this.config.dedupThreshold;
           }
           if (isDuplicate) {
             this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(Date.now(), s.id);
@@ -320,11 +343,21 @@ class MemoryPlugin {
       let isCore = isCoreKeyword(safeContent, this.config.coreKeywords);
       let keywords = extractKeywords(safeContent);
       let importance = isCore ? 1.0 : 0.5;
-      if (this.config.threshold.useLlmForCore && this.llmClient && !isCore) {
+      
+      // 阈值触发LLM核心判断：长度超过阈值 或 未命中关键词
+      const needLLMForCore = this.config.threshold.useLlmForCore && 
+                             this.llmClient && 
+                             (!isCore || safeContent.length >= this.config.threshold.lengthForCore);
+      if (needLLMForCore) {
         const r = await this.llmClient.isCoreMemory(safeContent);
         isCore = r.isCore; importance = r.confidence;
       }
-      if (this.config.threshold.useLlmForExtract && this.llmClient) keywords = await this.llmClient.extractKeywords(safeContent);
+      
+      // 阈值触发LLM关键词提取：长度超过阈值
+      const needLLMForExtract = this.config.threshold.useLlmForExtract && 
+                                 this.llmClient && 
+                                 safeContent.length >= this.config.threshold.lengthForExtract;
+      if (needLLMForExtract) keywords = await this.llmClient.extractKeywords(safeContent);
 
       const scope = this.config.scopes.enabled ? `${this.config.scopes.defaultScope}:${AgentId}` : 'global';
       const tier = getTier(importance, 1, 0, this.config.tier);
