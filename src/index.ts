@@ -682,8 +682,16 @@ export default function register(api: any): void {
     });
   });
 
-  // 获取用户配置
-  const cfg = api.pluginConfig || {};
+  // 获取用户配置（合并默认配置，这样即使不修改 openclaw.json 也能工作）
+  const userConfig = api.pluginConfig || {};
+  const cfg = { ...DEFAULT_CONFIG, ...userConfig };
+  
+  // 兼容旧配置格式（如果没有 enabled 字段，根据是否有用户配置决定）
+  if (userConfig.enabled === undefined && Object.keys(userConfig).length === 0) {
+    // 没有任何配置时，默认启用所有功能
+    cfg.autoCapture = true;
+    cfg.autoRecall = true;
+  }
 
   // 钩子
   api.on('agent_end', async (_e: any, ctx: any) => {
@@ -709,5 +717,6 @@ export default function register(api: any): void {
   });
 
   api.onDeactivate(() => plugin.close());
-  log.info(`[algo-memory] 插件注册完成, 工具数: ${toolDefinitions.length}, 每轮写入: ${cfg.capturePerTurn || 3}条, 三层晋升: ${cfg.tier?.enabled}`);
+  const isAutoEnabled = !userConfig.enabled && Object.keys(userConfig).length === 0;
+  log.info(`[algo-memory] 插件注册完成, 工具数: ${toolDefinitions.length}, 自动启用: ${isAutoEnabled}, 捕获: ${cfg.autoCapture}, 召回: ${cfg.autoRecall}, 每轮写入: ${cfg.capturePerTurn}条`);
 }
