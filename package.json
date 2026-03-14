@@ -1,7 +1,7 @@
 {
   "name": "algo-memory",
-  "version": "1.0.0",
-  "description": "纯算法长期记忆插件 - 0 API / 可选 LLM 增强",
+  "version": "2.1.0",
+  "description": "纯算法长期记忆插件 - 默认启用LLM / 支持多模型",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
