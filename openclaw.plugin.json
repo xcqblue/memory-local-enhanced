@@ -5,6 +5,7 @@
   "version": "2.1.0",
   "kind": "memory",
   "homepage": "https://github.com/xcqblue/algo-memory",
+  "installDependencies": true,
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
