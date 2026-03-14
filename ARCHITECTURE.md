@@ -1,198 +1,229 @@
-# 🏗️ algo-memory 架构设计
+# 🏗️ 架构设计
 
----
-
-## 🔄 核心流程
-
-### 1. 存储流程 (agent_end)
+## 系统架构
 
 ```
-用户输入 content
-    ↓
-[1] 规则分类 → type (6类)
-    ↓
-[2] LLM增强 (可选，默认关)
-    ↓
-[3] XSS转义 → safeContent
-    ↓
-[4] 哈希计算 → contentHash (基于safeContent)
-    ↓
-[5] 哈希查重
-    ├─ 存在 → UPDATE access_count → 返回
-    └─ 不存在 ↓
-    ↓
-[6] 智能去重 (Jaccard)
-    ├─ ≥98% → DUPLICATE → UPDATE → 返回
-    ├─ ≥85% → UPDATE → 合并内容+keywords → 返回
-    └─ <85% ↓
-    ↓
-[7] 写入新记忆
-    ├─ isCoreKeyword() → layer
-    ├─ extractKeywords() → keywords
-    └─ INSERT + FTS索引
-    ↓
-[8] 清理缓存
-```
-
-### 2. 智能去重策略 (Jaccard)
-
-```
-查询最近20条记忆
-    ↓
-计算 Jaccard 相似度
-    ┌─────────────────────────────────┐
-    │ ≥98% │ 完全相同 │ DUPLICATE    │
-    │ ≥85% │ 高度相似 │ UPDATE       │
-    │ <85% │ 新内容   │ NEW         │
-    └─────────────────────────────────┘
-    ↓
-(可选 LLM 精调)
-```
-
-### 3. 核心识别
-
-```
-isCoreKeyword(content)
-    ↓
-匹配关键词: 记住/重要/关键/不要忘记/remember/important...
-    ↓
-是 → layer='core', importance=1.0
-否 → layer='general', importance=0.5
-```
-
-### 4. 召回流程 (before_agent_start)
-
-```
-recall(agentId, query)
-    ↓
-1. 查缓存 (命中→返回)
-2. 搜索 (content/keywords LIKE)
-3. 时间衰减计算
-   └─ score × (0.3 + 0.7 × 0.5^(t/90天))
-4. 排序: core > general > importance > access > recency
-5. Token限制
-6. 缓存结果
-```
-
-### 5. 时间衰减策略
-
-```
-公式: score = baseScore × (0.3 + 0.7 × 0.5^(days/90))
-
-| 记忆时间 | 衰减系数 |
-|----------|----------|
-| 今天     | 1.00×   |
-| 30天前  | 0.80×   |
-| 60天前  | 0.60×   |
-| 90天前  | 0.50×   |
-```
-
-### 6. 定时清理
-
-```
-每天执行 (延迟1h后)
-    ↓
-删除: layer='general' + 超过90天
-    ↓
-保留: layer='core'
+┌─────────────────────────────────────────────────────────────┐
+│                      OpenClaw Gateway                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                   algo-memory 插件                     │   │
+│  │                                                      │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │   │
+│  │  │   工具层    │  │   钩子层    │  │   核心引擎   │  │   │
+│  │  │ (11 Tools)  │  │ (3 Hooks)   │  │ (Engine)    │  │   │
+│  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  │   │
+│  │         │                │                │          │   │
+│  │         └────────────────┼────────────────┘          │   │
+│  │                          │                           │   │
+│  │  ┌───────────────────────▼───────────────────────┐  │   │
+│  │  │                  LLM 客户端                     │  │   │
+│  │  │     (MiniMax/DeepSeek/Kimi/智谱/百炼/...)       │  │   │
+│  │  └───────────────────────┬───────────────────────┘  │   │
+│  │                          │                           │   │
+│  └──────────────────────────┼───────────────────────────┘   │
+│                             │                                │
+│  ┌──────────────────────────▼───────────────────────────┐   │
+│  │                    SQLite 数据库                       │   │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │   │
+│  │  │ memories │  │  FTS5    │  │    索引          │   │   │
+│  │  │   表     │  │ 全文索引 │  │ (7个)            │   │   │
+│  │  └──────────┘  └──────────┘  └──────────────────┘   │   │
+│  └───────────────────────────────────────────────────────┘   │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🔌 LLM 模型层 (可插拔)
+## 核心模块
 
-### 支持的提供商
+### 1. MemoryPlugin 类
 
-| 提供商 | 端点 | 说明 |
-|--------|------|------|
-| minimax | /v1 或 /v2 | MiniMax API |
-| openai | /chat/completions | OpenAI API |
-| claude | /chat/completions | Anthropic API |
-| deepseek | /chat/completions | DeepSeek API |
-| ollama | /api/generate | 本地模型 |
+```typescript
+class MemoryPlugin {
+  private db: Database;        // SQLite 数据库
+  private cache: LRUCache;     // 内存缓存
+  private sessionCache: LRUCache; // Session 缓存
+  private llmClient: LLMClient;    // LLM 客户端
+  private config: Config;      // 配置
+}
+```
 
-### LLM 使用场景
+### 2. LLM 客户端
 
-1. **类型增强** - 长文本自动识别类型
-2. **关键词提取** - 更准确的关键词
-3. **智能去重精调** - Jaccard 接近阈值时判断
-
-### 配置示例
-
-```json
-{
-  "llm": {
-    "enabled": false,
-    "provider": "minimax",
-    "apiKey": "your-key",
-    "model": "abab6.5s-chat",
-    "baseURL": "https://api.minimax.chat/v1",
-    "thresholdLength": 100
-  }
+```typescript
+class LLMClient {
+  // 核心判断
+  async isCoreMemory(content: string): Promise<{ isCore: boolean; confidence: number }>
+  
+  // 关键词提取
+  async extractKeywords(content: string): Promise<string>
+  
+  // 去重判断
+  async isDuplicate(c1: string, c2: string): Promise<{ isDuplicate: boolean; similarity: number }>
 }
 ```
 
 ---
 
-## 📊 数据表结构
+## 数据结构
 
 ### memories 表
 
-```sql
-CREATE TABLE memories (
-    id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    content TEXT NOT NULL,
-    type TEXT DEFAULT 'other',
-    layer TEXT DEFAULT 'general',
-    keywords TEXT,
-    importance REAL DEFAULT 0.5,
-    access_count INTEGER DEFAULT 0,
-    created_at INTEGER,
-    last_accessed INTEGER,
-    content_hash TEXT,
-    owner TEXT,
-    source TEXT
-);
-
-CREATE INDEX idx_agent ON memories(agent_id);
-CREATE INDEX idx_agent_hash ON memories(agent_id, content_hash);
-CREATE INDEX idx_layer ON memories(agent_id, layer);
-```
-
-### memories_fts 表
-
-```sql
-CREATE VIRTUAL TABLE memories_fts USING fts5(
-    id UNINDEXED,
-    content,
-    keywords
-);
-```
-
-### memory_metadata 表
-
-```sql
-CREATE TABLE memory_metadata (
-    key TEXT PRIMARY KEY,
-    value TEXT
-);
-```
-
-### 字段说明
-
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| id | TEXT | 记忆唯一ID |
-| agent_id | TEXT | 所属Agent |
-| content | TEXT | 记忆内容 |
-| type | TEXT | 类型 (preference/fact/event/entity/case/pattern) |
-| layer | TEXT | 层 (core/general) |
-| keywords | TEXT | JSON格式关键词 |
-| importance | REAL | 重要性 (0-1) |
-| access_count | INTEGER | 访问次数 |
-| created_at | INTEGER | 创建时间戳 |
-| last_accessed | INTEGER | 最后访问时间戳 |
-| content_hash | TEXT | 内容哈希 |
-| owner | TEXT | 所有者 (agent:xxx / public) |
-| source | TEXT | 来源 (dialog/migration/skill) |
+| `id` | TEXT | 主键 |
+| `agent_id` | TEXT | Agent ID |
+| `scope` | TEXT | 作用域 |
+| `content` | TEXT | 内容 |
+| `type` | TEXT | 类型 |
+| `tier` | TEXT | 层级: peripheral/working/core |
+| `layer` | TEXT | 层: core/general |
+| `keywords` | TEXT | 关键词 |
+| `importance` | REAL | 重要性 0-1 |
+| `access_count` | INTEGER | 访问次数 |
+| `created_at` | INTEGER | 创建时间 |
+| `last_accessed` | INTEGER | 最后访问 |
+| `content_hash` | TEXT | 内容哈希 |
+| `metadata` | TEXT | 元数据 JSON |
+
+### 索引
+
+```sql
+-- Agent 索引
+CREATE INDEX idx_agent ON memories(agent_id);
+
+-- 层级索引
+CREATE INDEX idx_tier ON memories(tier);
+
+-- 作用域索引
+CREATE INDEX idx_scope ON memories(scope);
+
+-- 查重索引
+CREATE INDEX idx_agent_hash ON memories(agent_id, content_hash);
+
+-- 排序索引
+CREATE INDEX idx_agent_tier_importance ON memories(agent_id, tier, importance DESC);
+
+-- 时间索引
+CREATE INDEX idx_agent_last_accessed ON memories(agent_id, last_accessed DESC);
+```
+
+---
+
+## FTS5 全文搜索
+
+```sql
+-- 创建虚拟表
+CREATE VIRTUAL TABLE memories_fts USING fts5(
+  id, content, keywords, 
+  content='memories', 
+  content_rowid='rowid'
+);
+
+-- 触发器：插入
+CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+  INSERT INTO memories_fts(rowid, id, content, keywords) 
+  VALUES (new.rowid, new.id, new.content, new.keywords);
+END;
+
+-- 触发器：删除
+CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, id, content, keywords) 
+  VALUES('delete', old.rowid, old.id, old.content, old.keywords);
+END;
+
+-- 触发器：更新
+CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, id, content, keywords) 
+  VALUES('delete', old.rowid, old.id, old.content, old.keywords);
+  INSERT INTO memories_fts(rowid, id, content, keywords) 
+  VALUES (new.rowid, new.id, new.content, new.keywords);
+END;
+```
+
+---
+
+## 配置架构
+
+```typescript
+interface Config {
+  // 基础
+  autoCapture: boolean;
+  autoRecall: boolean;
+  maxResults: number;
+  
+  // 存储
+  noiseFilter: NoiseFilterConfig;
+  smartDedup: boolean;
+  dedupThreshold: number;
+  
+  // 召回
+  recencyDecay: boolean;
+  recencyHalfLife: number;
+  adaptiveRetrieval: AdaptiveRetrievalConfig;
+  
+  // LLM
+  llm: LLMConfig;
+  threshold: ThresholdConfig;
+  
+  // 进阶
+  tier: TierConfig;
+  weibullDecay: WeibullDecayConfig;
+  reinforcement: ReinforcementConfig;
+  mmr: MMRConfig;
+  scopes: ScopesConfig;
+}
+```
+
+---
+
+## 依赖关系
+
+```
+用户请求
+    │
+    ▼
+┌─────────────────┐
+│   钩子触发      │
+│ (agent_end)     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐     ┌─────────────────┐
+│   store()      │────▶│  文本归一化     │
+│   存储模块     │     │  normalizeText  │
+└────────┬────────┘     └─────────────────┘
+         │
+         ▼
+┌─────────────────┐     ┌─────────────────┐
+│   噪声过滤     │────▶│  isNoise()      │
+│                 │     └─────────────────┘
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐     ┌─────────────────┐
+│   精确查重     │────▶│  content_hash   │
+│                 │     └─────────────────┘
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐     ┌─────────────────┐
+│   智能去重     │────▶│  Jaccard 相似度 │
+│                 │     │  + LLM 判断     │
+└────────┬────────┘     └─────────────────┘
+         │
+         ▼
+┌─────────────────┐     ┌─────────────────┐
+│   核心判断     │────▶│  isCoreKeyword  │
+│                 │     │  + LLM 判断     │
+└────────┬────────┘     └─────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│   写入数据库   │
+│   SQLite       │
+└─────────────────┘
+```

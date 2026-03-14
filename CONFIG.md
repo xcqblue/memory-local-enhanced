@@ -1,275 +1,217 @@
-# ⚙️ 配置与 API 参考
+# ⚙️ 配置详解
 
----
-
-## ⚙️ 配置说明
-
-### 完整配置
+## 最简配置
 
 ```json
 {
-  "autoCapture": true,
-  "autoRecall": true,
-  "maxResults": 5,
-  "maxContextChars": 500,
-  "cacheEnabled": true,
-  "cleanupDays": 90,
-  "cleanupDelayHours": 1,
-  "coreKeywords": [
-    "记住", "牢记", "重要", "不要忘记", "记住它",
-    "这是关键", "永久保留", "一直记住", "别忘了",
-    "remember", "important", "never forget", "always remember",
-    "关键", "核心", "必须记住", "一定要记住"
-  ],
-  "logLevel": "info",
-  "recencyDecay": true,
-  "recencyHalfLife": 90,
-  "publicMemory": false,
-  "smartDedup": true,
-  "llm": {
-    "enabled": false,
-    "provider": "minimax",
-    "thresholdLength": 100,
-    "apiKey": "",
-    "model": "abab6.5s-chat",
-    "baseURL": "https://api.minimax.chat/v1"
+  "plugins": {
+    "entries": {
+      "algo-memory": {
+        "enabled": true
+      }
+    }
   }
 }
 ```
 
-### 配置项说明
-
-| 配置 | 类型 | 默认值 | 说明 |
-|------|------|---------|------|
-| autoCapture | boolean | true | 自动捕获对话 |
-| autoRecall | boolean | true | 自动召回记忆 |
-| maxResults | number | 5 | 最大召回数量 |
-| maxContextChars | number | 500 | 上下文最大字符 |
-| cacheEnabled | boolean | true | 启用缓存 |
-| cleanupDays | number | 90 | 过期清理天数 |
-| cleanupDelayHours | number | 1 | 清理任务延迟启动 |
-| coreKeywords | array | [...] | 核心关键词 |
-| logLevel | string | info | 日志级别 |
-| recencyDecay | boolean | true | 启用时间衰减 |
-| recencyHalfLife | number | 90 | 半衰期天数 |
-| publicMemory | boolean | false | 启用公共记忆 |
-| smartDedup | boolean | true | 启用智能去重 |
-| llm.enabled | boolean | false | 启用LLM |
-| llm.provider | string | minimax | LLM提供商 |
-| llm.thresholdLength | number | 100 | 触发LLM长度 |
-| llm.apiKey | string | - | API密钥 |
-| llm.model | string | abab6.5s-chat | 模型名称 |
-| llm.baseURL | string | minimax | API地址 |
+**零配置自动启用！**
 
 ---
 
-## 🔧 CLI 命令
+## 完整配置
 
-### 基础命令
-
-```bash
-# 列出记忆
-memory list -a <agent-id> [-l 20]
-
-# 查看单条记忆详情
-memory get-detail -i <memory-id>
-
-# 搜索记忆
-memory search -a <agent-id> -q <关键词>
-
-# 查看统计
-memory stats [-a <agent-id>]
-```
-
-### 管理命令
-
-```bash
-# 删除 Agent 及所有记忆
-memory delete-agent -a <agent-id>
-
-# 删除单条记忆
-memory delete-memory -i <memory-id>
-
-# 更新单条记忆
-memory update-memory -i <memory-id> -c <新内容>
-
-# 清理过期记忆
-memory cleanup
-```
-
-### 更新命令
-
-```bash
-# 检查更新
-memory check-update
-
-# 从 GitHub 更新
-memory update
-
-# 从本地文件更新
-memory update-file -p <path>
-
-# 增加版本后缀 (当天多次更新)
-memory bump-version
-```
-
-### 数据命令
-
-```bash
-# 导出记忆
-memory export [-a <agent-id>]
-
-# 导入记忆
-memory import -j <json> [-r <true|false>]
-```
-
----
-
-## 📝 API
-
-### 构造函数
-
-```typescript
-import { MemoryPlugin } from './src/index';
-
-const memory = new MemoryPlugin({
-  autoCapture: true,
-  autoRecall: true,
-  maxResults: 5,
-  cleanupDays: 90,
-  recencyDecay: true,
-  recencyHalfLife: 90,
-  smartDedup: true
-});
-
-await memory.init();
-```
-
-### 核心 API
-
-```typescript
-// 存储记忆
-await memory.store(agentId, messages);
-
-// 召回记忆
-const result = await memory.recall(agentId, query);
-// 返回: { hasMemory: boolean, memories: Memory[], message: string }
-
-// 删除 Agent 及所有记忆
-await memory.deleteAgent(agentId);
-
-// 清理过期记忆
-await memory.cleanupExpired();
-
-// 关闭
-memory.close();
-```
-
-### 管理 API
-
-```typescript
-// 手动设置核心记忆
-await memory.setCoreMemory(agentId, content, 'fact');
-
-// 标记现有记忆为核心
-await memory.markAsCore(memoryId);
-
-// 手动升级
-await memory.promoteToCore(agentId, memoryId);
-
-// 删除单条记忆
-memory.deleteMemory(memoryId);
-
-// 更新记忆
-memory.updateMemory(memoryId, newContent);
-
-// 获取统计
-memory.getStats(agentId?);
-```
-
-### 查询 API
-
-```typescript
-// 列出记忆
-memory.listMemories(agentId, limit, offset);
-
-// 获取单条详情
-memory.getMemoryDetail(memoryId);
-
-// 搜索
-memory.searchMemories(agentId, query, limit);
-```
-
-### 高级 API
-
-```typescript
-// 写入公共记忆
-await memory.writePublicMemory(content, type);
-
-// 智能去重判断
-await memory.smartDedup(agentId, content);
-// 返回: { result: 'DUPLICATE'|'UPDATE'|'NEW', existingId?: string }
-
-// 检查更新
-await memory.checkUpdate();
-
-// 从 GitHub 更新
-await memory.updateFromGitHub();
-
-// 从文件更新
-await memory.updateFromFile(path);
-
-// 导出记忆
-memory.exportMemories(agentId?);
-
-// 导入记忆
-memory.importMemories(memories, replace?);
-```
-
-### Memory 对象结构
-
-```typescript
-interface Memory {
-  id: string;
-  agent_id: string;
-  content: string;
-  type: 'preference' | 'fact' | 'event' | 'entity' | 'case' | 'pattern' | 'other';
-  layer: 'core' | 'general';
-  keywords: string;
-  importance: number;
-  access_count: number;
-  created_at: number;
-  last_accessed: number;
-  content_hash: string;
-  owner?: string;
-  source?: string;
-}
-```
-
-### RecallResult 对象结构
-
-```typescript
-interface RecallResult {
-  hasMemory: boolean;
-  memories: Memory[];
-  message: string;
+```json
+{
+  "plugins": {
+    "slots": { "memory": "algo-memory" },
+    "entries": {
+      "algo-memory": {
+        "enabled": true,
+        "config": {
+          "autoCapture": true,
+          "autoRecall": true,
+          "maxResults": 5,
+          "capturePerTurn": 3,
+          "cleanupDays": 180,
+          "language": "auto",
+          "recencyDecay": true,
+          "recencyHalfLife": 180,
+          "smartDedup": true,
+          "dedupThreshold": 0.85,
+          "coreKeywords": ["记住", "重要", "不要忘记", "remember", "important"],
+          
+          "noiseFilter": {
+            "enabled": true,
+            "skipGreetings": true,
+            "skipCommands": true
+          },
+          
+          "adaptiveRetrieval": {
+            "enabled": true,
+            "minQueryLength": 2,
+            "forceKeywords": ["之前", "上次", "记得", "remember", "before"]
+          },
+          
+          "sessionMemory": {
+            "enabled": true,
+            "maxSessionItems": 10
+          },
+          
+          "tier": {
+            "enabled": true,
+            "coreThreshold": 3,
+            "peripheralThreshold": 0.3,
+            "ageDays": 90
+          },
+          
+          "weibullDecay": {
+            "enabled": false,
+            "shape": 1.5,
+            "scale": 90
+          },
+          
+          "reinforcement": {
+            "enabled": true,
+            "factor": 0.1,
+            "maxMultiplier": 2.0
+          },
+          
+          "mmr": {
+            "enabled": false,
+            "threshold": 0.85
+          },
+          
+          "scopes": {
+            "enabled": false,
+            "defaultScope": "agent"
+          },
+          
+          "llm": {
+            "enabled": true,
+            "provider": "auto",
+            "apiKey": "${API_KEY}",
+            "model": "",
+            "baseURL": ""
+          },
+          
+          "threshold": {
+            "useLlmForCore": false,
+            "useLlmForExtract": false,
+            "useLlmForDedup": false,
+            "lengthForCore": 100,
+            "lengthForExtract": 200,
+            "dedupUncertaintyMin": 0.5,
+            "dedupUncertaintyMax": 0.98
+          }
+        }
+      }
+    }
+  }
 }
 ```
 
 ---
 
-## 📊 功能矩阵
+## 配置项说明
 
-| 功能 | 默认状态 |
-|------|---------|
-| 自动存储 | ✅ 开 |
-| 6类分类 | ✅ 开 |
-| 核心自动识别 | ✅ 开 |
-| 哈希去重 | ✅ 开 |
-| 智能去重 (Jaccard) | ✅ **开** |
-| 时间衰减 | ✅ **开** |
-| LRU缓存 | ✅ 开 |
-| XSS防护 | ✅ 开 |
-| 定时清理 | ✅ 开 |
-| 公共记忆 | ⭐ 关 |
-| LLM增强 | ⭐ 关 |
+### 基础配置
+
+| 配置 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `enabled` | boolean | true | 启用插件 |
+| `autoCapture` | boolean | true | 自动存储记忆 |
+| `autoRecall` | boolean | true | 自动召回记忆 |
+| `maxResults` | number | 5 | 召回数量上限 |
+| `capturePerTurn` | number | 3 | 每轮最多存储条数 |
+| `cleanupDays` | number | 180 | 自动清理天数 |
+| `language` | string | "auto" | 语言: auto/zh/en/ja/ko/es/fr/de |
+
+### 核心配置
+
+| 配置 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `coreKeywords` | string[] | [...] | 核心关键词列表 |
+| `recencyDecay` | boolean | true | 启用时间衰减 |
+| `recencyHalfLife` | number | 180 | 半衰期(天) |
+| `smartDedup` | boolean | true | 智能去重 |
+| `dedupThreshold` | number | 0.85 | 去重阈值 |
+
+### 噪声过滤
+
+| 配置 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `noiseFilter.enabled` | boolean | true | 启用过滤 |
+| `noiseFilter.skipGreetings` | boolean | true | 跳过问候语 |
+| `noiseFilter.skipCommands` | boolean | true | 跳过命令 |
+
+### 自适应检索
+
+| 配置 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `adaptiveRetrieval.enabled` | boolean | true | 启用自适应 |
+| `adaptiveRetrieval.minQueryLength` | number | 2 | 最小查询长度 |
+| `adaptiveRetrieval.forceKeywords` | string[] | [...] | 强制触发关键词 |
+
+### 三层晋升
+
+| 配置 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `tier.enabled` | boolean | false | 启用三层晋升 |
+| `tier.coreThreshold` | number | 10 | 晋升核心阈值 |
+| `tier.peripheralThreshold` | number | 0.15 | 边缘阈值 |
+| `tier.ageDays` | number | 60 | 天数阈值 |
+
+### 时间衰减
+
+| 配置 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `weibullDecay.enabled` | boolean | false | 启用 Weibull 衰减 |
+| `weibullDecay.shape` | number | 1.5 | 形状参数 |
+| `weibullDecay.scale` | number | 90 | 尺度参数 |
+
+### LLM 配置
+
+| 配置 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `llm.enabled` | boolean | true | 启用 LLM |
+| `llm.provider` | string | "auto" | 模型供应商 |
+| `llm.apiKey` | string | "" | API 密钥 |
+| `llm.model` | string | "" | 模型名称 |
+| `llm.baseURL` | string | "" | API 地址 |
+
+### LLM 阈值
+
+| 配置 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `threshold.useLlmForCore` | boolean | false | LLM 判断核心 |
+| `threshold.useLlmForExtract` | boolean | false | LLM 提取关键词 |
+| `threshold.useLlmForDedup` | boolean | false | LLM 判断去重 |
+| `threshold.lengthForCore` | number | 100 | 触发核心判断长度 |
+| `threshold.lengthForExtract` | number | 200 | 触发提取长度 |
+| `threshold.dedupUncertaintyMin` | number | 0.5 | 去重不确定区间下限 |
+| `threshold.dedupUncertaintyMax` | number | 0.98 | 去重不确定区间上限 |
+
+---
+
+## LLM 模型列表
+
+### 🇨🇳 国内（推荐）
+
+| provider | baseURL | 默认模型 |
+|----------|---------|----------|
+| minimax | https://api.minimax.chat/v1 | abab6.5s-chat |
+| bailian | https://dashscope.aliyuncs.com/compatible-mode/v1 | qwen-plus |
+| deepseek | https://api.deepseek.com/v1 | deepseek-chat |
+| kimi | https://api.moonshot.cn/v1 | kimi-chat |
+| zhipu | https://open.bigmodel.cn/api/paas/v4 | glm-4-flash |
+| hunyuan | https://hunyuan.tencent.com/proxy/v1 | hunyuan-standard |
+| wenxin | https://qianfan.baidubce.com/v2 | ernie-3.5-8k |
+| siliconflow | https://api.siliconflow.cn/v1 | Qwen/Qwen2-7B-Instruct |
+
+### 🌍 国外
+
+| provider | baseURL | 默认模型 |
+|----------|---------|----------|
+| openai | https://api.openai.com/v1 | gpt-4o-mini |
+| anthropic | https://api.anthropic.com/v1 | claude-3-haiku |
+| ollama | http://localhost:11434/v1 | llama2 |

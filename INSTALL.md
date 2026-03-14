@@ -1,330 +1,122 @@
-# algo-memory 安装指南
-
-## 简介
-
-algo-memory 是一个纯算法长期记忆插件，专为 OpenClaw 设计：
-- **0 API 依赖**：默认无需任何外部 API
-- **可选 LLM 增强**：支持 OpenAI/Ollama 等 LLM 提升准确性
-- **本地存储**：所有数据保存在本地 SQLite
-- **高性能**：写入 4000+ 条/秒，读取 30000+ 次/秒
-- **FTS5 全文搜索**：SQLite 内置高精度搜索引擎
-- **错误恢复**：数据库连接自动重连
+# 📖 安装指南
 
 ## 环境要求
 
-- OpenClaw 2026.2.0+
-- Node.js 18+
-- (可选) LLM API Key (如需增强)
+| 项目 | 最低 | 推荐 |
+|------|------|------|
+| Node.js | >= 18.0.0 | >= 20.0.0 |
+| 内存 | 256MB | 512MB+ |
+| 磁盘 | 50MB | 100MB+ |
 
 ---
 
 ## 安装方式
 
-### 方式一：克隆到 extensions 目录（推荐）
+### 方式一：extensions 目录（推荐）
 
 ```bash
-# 1. 克隆插件到 extensions 目录
+# 1. 克隆插件
 mkdir -p ~/.openclaw/extensions
 git clone https://github.com/xcqblue/algo-memory.git ~/.openclaw/extensions/algo-memory
 
 # 2. 安装依赖
 cd ~/.openclaw/extensions/algo-memory
 npm install
-```
 
-### 方式二：克隆到 workspace 目录
-
-```bash
-# 1. 克隆插件
-cd ~/.openclaw/workspace
-git clone https://github.com/xcqblue/algo-memory.git plugins/algo-memory
-
-# 2. 安装依赖
-cd plugins/algo-memory
-npm install
-```
-
-### 方式三：绝对路径加载
-
-```bash
-# 克隆到任意位置
-git clone https://github.com/xcqblue/algo-memory.git /path/to/algo-memory
-cd /path/to/algo-memory
-npm install
-```
-
----
-
-## 配置 OpenClaw
-
-编辑 `~/.openclaw/openclaw.json`:
-
-### 方式一：workspace 模式
-
-```json
-{
-  "plugins": {
-    "load": {
-      "paths": ["plugins/algo-memory"]
-    },
-    "slots": {
-      "memory": "algo-memory"
-    },
-    "entries": {
-      "algo-memory": {
-        "enabled": true,
-        "config": {
-          "autoCapture": true,
-          "autoRecall": true,
-          "maxResults": 5,
-          "cleanupDays": 180,
-          "noiseFilter": {
-            "enabled": true
-          },
-          "adaptiveRetrieval": {
-            "enabled": true
-          },
-          "sessionMemory": {
-            "enabled": false
-          },
-          "weibullDecay": {
-            "enabled": false
-          },
-          "mmr": {
-            "enabled": false
-          },
-          "scopes": {
-            "enabled": false
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-### 方式二：绝对路径模式
-
-```json
-{
-  "plugins": {
-    "load": {
-      "paths": ["/absolute/path/to/algo-memory"]
-    },
-    "slots": {
-      "memory": "algo-memory"
-    },
-    "entries": {
-      "algo-memory": {
-        "enabled": true,
-        "config": {
-          "autoCapture": true,
-          "autoRecall": true
-        }
-      }
-    }
-  }
-}
-```
-
-### LLM 增强配置（可选）
-
-```json
-{
-  "plugins": {
-    "slots": {
-      "memory": "algo-memory"
-    },
-    "entries": {
-      "algo-memory": {
-        "enabled": true,
-        "config": {
-          "autoCapture": true,
-          "autoRecall": true,
-          "llm": {
-            "enabled": true,
-            "provider": "openai",
-            "apiKey": "${OPENAI_API_KEY}",
-            "model": "gpt-4o-mini",
-            "baseURL": "https://api.openai.com/v1"
-          },
-          "threshold": {
-            "useLlmForCore": true,
-            "useLlmForExtract": false,
-            "useLlmForDedup": false,
-            "lengthForCore": 100,
-            "lengthForExtract": 200
-          }
-        }
-      }
-    }
-  }
-}
-```
-
----
-
-## 重启并验证
-
-```bash
-# 1. 验证配置
-openclaw config validate
-
-# 2. 重启 Gateway
+# 3. 重启 OpenClaw
 openclaw gateway restart
+```
 
-# 3. 查看插件信息
-openclaw plugins info algo-memory
+### 方式二：plugins 目录
 
-# 4. 查看钩子列表
-openclaw hooks list --json
+```bash
+cd ~/.openclaw/plugins
+git clone https://github.com/xcqblue/algo-memory.git
+cd algo-memory
+npm install
+```
 
-# 5. 查看日志
-openclaw logs --follow --plain | grep algo-memory
+---
+
+## 依赖说明
+
+| 依赖 | 类型 | 用途 |
+|------|------|------|
+| `@sinclair/typebox` | 运行时 | 类型定义 |
+| `lru-cache` | 运行时 | 内存缓存 |
+| `better-sqlite3` | 运行时 | 数据库 |
+
+**注意**：better-sqlite3 需要编译：
+- Linux: `build-essential`
+- macOS: `Xcode`
+- Windows: `node-gyp`
+
+---
+
+## 验证安装
+
+### 1. 检查日志
+
+```bash
+openclaw logs | grep algo-memory
 ```
 
 预期输出：
 ```
-[algo-memory] 插件注册完成, 工具数: 11, 自动启用: true
-[algo-memory] 数据库初始化: /home/x/.openclaw/workspace/algo-memory/memories.db
+[algo-memory] 数据库初始化: ~/.openclaw/workspace/algo-memory/memories.db
 [algo-memory] FTS5 全文搜索已启用
+[algo-memory] 插件注册完成, 工具数: 11, 自动启用: true
+```
+
+### 2. 检查工具
+
+在对话中测试：
+```
+列出我的记忆
 ```
 
 ---
 
-## 验证清单
+## 卸载
 
-- [ ] `openclaw config validate` 通过
-- [ ] `openclaw gateway restart` 成功
-- [ ] 插件加载无报错
-- [ ] 工具注册成功 (11个)
-- [ ] 钩子注册成功
-- [ ] FTS5 全文搜索启用
+```bash
+# 删除插件目录
+rm -rf ~/.openclaw/extensions/algo-memory
+
+# 重启 OpenClaw
+openclaw gateway restart
+```
 
 ---
 
 ## 常见问题
 
-### Q: 插件没有加载？
-A: 检查 `openclaw.json` 配置是否正确，确保 `plugins.load.paths` 包含插件路径。
+### Q: 提示 better-sqlite3 找不到？
 
-### Q: 工具无法使用？
-A: 确保 `plugins.slots.memory` 绑定到正确的插件 ID。
-
-### Q: 报错 better-sqlite3？
-A: 需要重新编译: `npm rebuild better-sqlite3`
-
-### Q: FTS5 搜索失败？
-A: FTS5 创建失败时会自动回退到 LIKE 查询，不影响正常使用。
-
-### Q: 数据库连接失败？
-A: 插件会自动尝试重连，如果持续失败请检查数据库文件权限。
-
----
-
-## 完整配置参考
-
-```json
-{
-  "autoCapture": true,
-  "autoRecall": true,
-  "maxResults": 5,
-  "capturePerTurn": 3,
-  "cleanupDays": 180,
-  "language": "auto",
-  "recencyDecay": true,
-  "recencyHalfLife": 180,
-  "smartDedup": true,
-  "dedupThreshold": 0.85,
-  "coreKeywords": ["记住", "重要", "不要忘记", "永远记住", "牢记"],
-  "noiseFilter": {
-    "enabled": true,
-    "skipGreetings": true,
-    "skipCommands": true
-  },
-  "adaptiveRetrieval": {
-    "enabled": true,
-    "minQueryLength": 2,
-    "forceKeywords": ["之前", "上次", "记得", "以前"]
-  },
-  "sessionMemory": {
-    "enabled": true,
-    "maxSessionItems": 10
-  },
-  "weibullDecay": {
-    "enabled": false,
-    "shape": 1.5,
-    "scale": 90
-  },
-  "reinforcement": {
-    "enabled": true,
-    "factor": 0.1,
-    "maxMultiplier": 2.0
-  },
-  "scopes": {
-    "enabled": false,
-    "defaultScope": "agent"
-  },
-  "mmr": {
-    "enabled": false,
-    "threshold": 0.85
-  },
-  "lengthNorm": {
-    "enabled": false,
-    "anchor": 500
-  },
-  "hardMinScore": {
-    "enabled": false,
-    "threshold": 0.3
-  },
-  "tier": {
-    "enabled": true,
-    "coreThreshold": 3,
-    "peripheralThreshold": 0.3,
-    "ageDays": 90
-  },
-  "llm": {
-    "enabled": false,
-    "provider": "openai",
-    "apiKey": "",
-    "model": "gpt-4o-mini",
-    "baseURL": "https://api.openai.com/v1"
-  },
-  "threshold": {
-    "useLlmForCore": false,
-    "useLlmForExtract": false,
-    "useLlmForDedup": false,
-    "minConfidence": 0.8,
-    "lengthForCore": 100,
-    "lengthForExtract": 200,
-    "dedupUncertaintyMin": 0.5,
-    "dedupUncertaintyMax": 0.98
-  }
-}
+```bash
+# 重新安装
+npm install
+npm rebuild better-sqlite3
 ```
 
----
+### Q: 如何查看数据库？
 
-## 可用工具
+```bash
+# 使用 sqlite3
+sqlite3 ~/.openclaw/workspace/algo-memory/memories.db
 
-| 工具名 | 说明 |
-|--------|------|
-| `algo_memory_list` | 列出所有记忆 |
-| `algo_memory_search` | 搜索记忆 (FTS5) |
-| `algo_memory_stats` | 查看统计 |
-| `algo_memory_get` | 获取单条记忆 |
-| `algo_memory_delete` | 删除记忆 |
-| `algo_memory_delete_bulk` | 批量删除 |
-| `algo_memory_clear` | 清空记忆 |
-| `algo_memory_update` | 更新记忆 |
-| `algo_memory_export` | 导出记忆 |
-| `algo_memory_import` | 导入记忆 |
-| `algo_memory_session` | 获取Session记忆 |
+# 查看表
+.tables
 
----
+# 查看数据
+SELECT * FROM memories LIMIT 10;
+```
 
-## 更多信息
+### Q: 如何修改数据存储位置？
 
-- GitHub: https://github.com/xcqblue/algo-memory
-- 版本: 1.9.0
-- 问题反馈: https://github.com/xcqblue/algo-memory/issues
+在配置中指定：
+```json
+{
+  "dataDir": "/自定义/路径"
+}
+```
