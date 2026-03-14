@@ -60,6 +60,7 @@ const DEFAULT_CONFIG: Config = {
   maxResults: 5,
   cleanupDays: 180,
   language: 'auto',  // auto, zh, en, ja, ko, es, fr, de
+  coreKeywords: ['记住', '牢记', '重要', '不要忘记', '记住它', 'remember', 'important', 'never forget'],
   recencyDecay: true,
   recencyHalfLife: 180,
   smartDedup: true,
