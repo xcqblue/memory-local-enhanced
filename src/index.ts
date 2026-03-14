@@ -390,7 +390,7 @@ class MemoryPlugin {
       this.log.warn('[algo-memory] FTS5 创建失败，使用备用搜索:', err.message);
     }
     
-    this.log.info('[algo-memory] 数据库初始化:', dbPath);
+    this.log.info('[algo-memory] 数据库初始化:', this.dbPath);
     this.log.info(`[algo-memory] 每轮最多写入: ${this.config.capturePerTurn} 条`);
     this.cleanupInterval = setInterval(() => this.cleanup(), 24 * 60 * 60 * 1000);
   }
