@@ -335,6 +335,7 @@ class MemoryPlugin {
     
     let captured = 0;
     const maxCapture = this.config.capturePerTurn || 3;
+    const storeStartTime = Date.now();
     
     for (const msg of messages) {
       if (captured >= maxCapture) break;
@@ -416,9 +417,10 @@ class MemoryPlugin {
       this.db.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(memory.id, memory.agent_id, memory.scope, memory.content, memory.type, memory.tier, memory.layer, memory.keywords, memory.importance, memory.access_count, memory.created_at, memory.last_accessed, memory.content_hash, memory.metadata);
       captured++;
     }
-    // 日志增强：记录存储操作统计
+    // 日志增强：记录存储操作统计和性能
+    const storeDuration = Date.now() - storeStartTime;
     if (captured > 0) {
-      this.log.info(`[algo-memory] 存储完成, 新增: ${captured}, agentId: ${AgentId}`);
+      this.log.info(`[algo-memory] 存储完成, 新增: ${captured}, agentId: ${AgentId}, 耗时: ${storeDuration}ms`);
     }
   }
 
@@ -432,11 +434,15 @@ class MemoryPlugin {
   }
 
   async recall(AgentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
+    const recallStartTime = Date.now();
     if (!shouldRetrieve(query, this.config.adaptiveRetrieval)) return { hasMemory: false, memories: [] };
     // 缓存 key 加入关键配置哈希，确保配置变化时缓存失效
     const configHash = hashContent(`${this.config.maxResults}:${this.config.recencyDecay}:${this.config.recencyHalfLife}`);
     const cacheKey = `recall:${AgentId}:${configHash}:${query}`;
-    if (this.cache.has(cacheKey)) return this.cache.get(cacheKey)!;
+    if (this.cache.has(cacheKey)) {
+      this.log.info(`[algo-memory] 召回完成(缓存命中), agentId: ${AgentId}, 耗时: ${Date.now() - recallStartTime}ms`);
+      return this.cache.get(cacheKey)!;
+    }
 
     let memories = this.db!.prepare("SELECT * FROM memories WHERE agent_id = ? ORDER BY CASE tier WHEN 'core' THEN 0 WHEN 'working' THEN 1 ELSE 2 END, importance DESC, access_count DESC LIMIT ?").all(AgentId, this.config.maxResults * 3) as any[];
 
@@ -462,6 +468,8 @@ class MemoryPlugin {
     const limited = memories.slice(0, this.config.maxResults);
     const result = { hasMemory: limited.length > 0, memories: limited };
     this.cache.set(cacheKey, result);
+    const recallDuration = Date.now() - recallStartTime;
+    this.log.info(`[algo-memory] 召回完成, agentId: ${AgentId}, 命中: ${limited.length}, 耗时: ${recallDuration}ms`);
     return result;
   }
 
