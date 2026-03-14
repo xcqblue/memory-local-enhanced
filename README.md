@@ -2,7 +2,7 @@
 
 **纯算法长期记忆插件 - 默认启用 LLM / 支持多模型**
 
-[![Version](https://img.shields.io/badge/Version-2.1.0-blue)](https://github.com/xcqblue/algo-memory)
+[![Version](https://img.shields.io/badge/Version-2.2.0-blue)](https://github.com/xcqblue/algo-memory)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
@@ -15,6 +15,7 @@
 | **存储** | 0 API / 本地 SQLite / FTS5 全文搜索 |
 | **智能** | 核心记忆 / 智能去重 / 三层晋升 / 时间衰减 |
 | **工具** | 11 个工具 / 完整记忆管理 |
+| **隔离** | Agent隔离 / 支持跨Agent查看 |
 | **多语言** | 中文/英文/日文/韩文/西班牙文/法文/德文 |
 
 ---
@@ -86,6 +87,23 @@ openclaw gateway restart
   "recencyDecay": true     // 时间衰减
 }
 ```
+
+### 🔒 Agent 隔离配置
+
+```json
+{
+  "scopes": {
+    "enabled": true,           // 启用隔离（默认）
+    "visibleAgents": []       // 允许查看的Agent列表
+  }
+}
+```
+
+| visibleAgents | 行为 |
+|---------------|------|
+| `[]` (空) | 只能看自己的记忆 |
+| `["*"]` | 可以看全部Agent的记忆 |
+| `["agent-A"]` | 可以看自己和A的记忆 |
 
 详细配置见 [CONFIG.md](./CONFIG.md)
 

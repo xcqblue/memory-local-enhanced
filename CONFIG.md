@@ -82,8 +82,9 @@
           },
           
           "scopes": {
-            "enabled": false,
-            "defaultScope": "agent"
+            "enabled": true,
+            "defaultScope": "agent",
+            "visibleAgents": []
           },
           
           "llm": {
@@ -160,6 +161,22 @@
 | `tier.coreThreshold` | number | 10 | 晋升核心阈值 |
 | `tier.peripheralThreshold` | number | 0.15 | 边缘阈值 |
 | `tier.ageDays` | number | 60 | 天数阈值 |
+
+### 多 Scope 隔离
+
+| 配置 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `scopes.enabled` | boolean | true | 启用Agent隔离模式 |
+| `scopes.defaultScope` | string | "agent" | 默认作用域 |
+| `scopes.visibleAgents` | string[] | [] | 允许查看的Agent列表 |
+
+**visibleAgents 配置示例：**
+
+| 配置 | 行为 |
+|------|------|
+| `[]` (空) | 只能看自己的记忆（默认） |
+| `["*"]` | 可以看全部Agent的记忆 |
+| `["agent-A", "agent-B"]` | 可以看自己和指定Agent的记忆 |
 
 ### 时间衰减
 
