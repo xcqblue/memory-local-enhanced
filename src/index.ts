@@ -823,29 +823,44 @@ export default function register(api: any): void {
   }
 
   // 钩子
+  // store 内部有精确查重（content_hash），不会重复存储
   api.on('agent_end', async (_e: any, ctx: any) => {
-    const sessionKey = ctx.sessionKey || 'default';
-    const messages = ctx.messages || [];
-    if (cfg.autoCapture && messages.length > 0) await plugin.store(sessionKey, messages);
-  });
-
-  api.onConversationTurn(async (messages: any[], sessionKey: string, _owner: string) => {
-    const agentId = sessionKey || 'default';
-    if (cfg.autoCapture) await plugin.store(agentId, messages);
-    if (cfg.autoRecall) {
-      const userMsg = messages.find((m: any) => m.role === 'user');
-      if (userMsg && shouldRetrieve(userMsg.content || '', cfg.adaptiveRetrieval || DEFAULT_CONFIG.adaptiveRetrieval)) {
-        const recallResult = await plugin.recall(agentId, userMsg.content || '');
-        if (recallResult.hasMemory && recallResult.memories.length > 0) {
-          const recallText = recallResult.memories.map(m => m.content).join('\n');
-          plugin.addSessionMemory(agentId, `[召回] ${recallText}`);
-          log.info(`[algo-memory] 自动召回: ${recallResult.memories.length} 条记忆`);
-        }
-      }
+    try {
+      const sessionKey = ctx.sessionKey || 'default';
+      const messages = ctx.messages || [];
+      if (cfg.autoCapture && messages.length > 0) await plugin.store(sessionKey, messages);
+    } catch (err) {
+      log.error('[algo-memory] agent_end 钩子错误:', err);
     }
   });
 
-  api.onDeactivate(() => plugin.close());
+  api.onConversationTurn(async (messages: any[], sessionKey: string, _owner: string) => {
+    try {
+      const agentId = sessionKey || 'default';
+      if (cfg.autoCapture) await plugin.store(agentId, messages);
+      if (cfg.autoRecall) {
+        const userMsg = messages.find((m: any) => m.role === 'user');
+        if (userMsg && shouldRetrieve(userMsg.content || '', cfg.adaptiveRetrieval || DEFAULT_CONFIG.adaptiveRetrieval)) {
+          const recallResult = await plugin.recall(agentId, userMsg.content || '');
+          if (recallResult.hasMemory && recallResult.memories.length > 0) {
+            const recallText = recallResult.memories.map(m => m.content).join('\n');
+            plugin.addSessionMemory(agentId, `[召回] ${recallText}`);
+            log.info(`[algo-memory] 自动召回: ${recallResult.memories.length} 条记忆`);
+          }
+        }
+      }
+    } catch (err) {
+      log.error('[algo-memory] onConversationTurn 钩子错误:', err);
+    }
+  });
+
+  api.onDeactivate(() => {
+    try {
+      plugin.close();
+    } catch (err) {
+      console.error('[algo-memory] onDeactivate 钩子错误:', err);
+    }
+  });
   const isAutoEnabled = !userConfig.enabled && Object.keys(userConfig).length === 0;
   log.info(`[algo-memory] 插件注册完成, 工具数: ${toolDefinitions.length}, 自动启用: ${isAutoEnabled}, 捕获: ${cfg.autoCapture}, 召回: ${cfg.autoRecall}, 每轮写入: ${cfg.capturePerTurn}条`);
 }
