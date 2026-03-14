@@ -40,16 +40,16 @@ openclaw gateway restart
 
 ### 🇨🇳 国内（推荐）
 
-| 模型 | provider | 默认模型 |
+| 模型 | provider | 可选模型 |
 |------|----------|----------|
-| MiniMax | `minimax` | abab6.5s-chat |
-| 阿里百炼 | `bailian` | qwen-plus |
-| DeepSeek | `deepseek` | deepseek-chat |
-| Kimi | `kimi` | kimi-chat |
-| 智谱 AI | `zhipu` | glm-4-flash |
-| 腾讯混元 | `hunyuan` | hunyuan-standard |
-| 百度文心 | `wenxin` | ernie-3.5-8k |
-| SiliconFlow | `siliconflow` | Qwen/Qwen2-7B-Instruct |
+| MiniMax 2.5 | `minimax` | abab6.5s-chat, abab6.5g-chat, abab6.5s-chat-200k |
+| 阿里百炼 | `bailian` | qwen-plus, qwen-turbo, qwen-max, qwen-long |
+| DeepSeek | `deepseek` | deepseek-chat, deepseek-coder |
+| Kimi | `kimi` | kimi-chat, kimi-chat-latest |
+| 智谱 AI | `zhipu` | glm-4, glm-4-flash, glm-3-turbo |
+| 腾讯混元 | `hunyuan` | hunyuan-pro, hunyuan-standard |
+| 百度文心 | `wenxin` | ernie-4.0-8k, ernie-3.5-8k, ernie-speed-8k |
+| SiliconFlow | `siliconflow` | Qwen/Qwen2-7B-Instruct, THUDM/glm-4-9b-chat |
 
 ### 🌍 国外
 

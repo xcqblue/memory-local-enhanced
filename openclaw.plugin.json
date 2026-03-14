@@ -29,7 +29,7 @@
       "capturePerTurn": { "type": "number", "default": 3, "description": "每轮最多写入记忆数" },
       "tier": { "type": "object", "description": "三层晋升系统", "properties": { "enabled": { "type": "boolean" }, "coreThreshold": { "type": "number" }, "peripheralThreshold": { "type": "number" }, "ageDays": { "type": "number" } } },
       "scopes": { "type": "object", "description": "多Scope隔离", "properties": { "enabled": { "type": "boolean" }, "defaultScope": { "type": "string" } } },
-      "llm": { "type": "object", "description": "LLM配置(默认启用auto模式,支持minimax/openai/anthropic/google/cohere/ollama)", "properties": { "enabled": { "type": "boolean", "default": true }, "provider": { "type": "string", "default": "auto" }, "apiKey": { "type": "string" }, "model": { "type": "string" }, "baseURL": { "type": "string" } } },
+      "llm": { "type": "object", "description": "LLM配置(默认启用,支持minimax2.5/deepseek/kimi/百炼/智谱/混元/文心)", "properties": { "enabled": { "type": "boolean", "default": true }, "provider": { "type": "string", "default": "auto" }, "apiKey": { "type": "string" }, "model": { "type": "string" }, "baseURL": { "type": "string" } } },
       "threshold": { 
         "type": "object", 
         "description": "LLM阈值配置", 

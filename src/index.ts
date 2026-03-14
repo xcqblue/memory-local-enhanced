@@ -265,7 +265,18 @@ const LLM_PROVIDERS = {
   // MiniMax (默认推荐)
   minimax: {
     baseURL: 'https://api.minimax.chat/v1',
-    models: ['abab6.5s-chat', 'abab6.5g-chat', 'abab6s-chat'],
+    models: [
+      // 2.5 系列
+      'abab6.5s-chat',    // MiniMax 2.5 (默认)
+      'abab6.5g-chat',    // MiniMax 2.5 增强版
+      'abab6.5s-chat-200k', // MiniMax 2.5 200K上下文
+      // 1.8 系列
+      'abab1.8s-chat',    // MiniMax 1.8
+      'abab1.8g-chat',    // MiniMax 1.8 增强版
+      // 1.5 系列
+      'abab6s-chat',     // MiniMax 1.5
+      'abab5.5s-chat'    // MiniMax 1.5.5
+    ],
     defaultModel: 'abab6.5s-chat'
   },
   // 阿里云百炼

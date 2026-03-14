@@ -197,16 +197,16 @@
 
 ### 🇨🇳 国内（推荐）
 
-| provider | baseURL | 默认模型 |
+| provider | baseURL | 可选模型 |
 |----------|---------|----------|
-| minimax | https://api.minimax.chat/v1 | abab6.5s-chat |
-| bailian | https://dashscope.aliyuncs.com/compatible-mode/v1 | qwen-plus |
-| deepseek | https://api.deepseek.com/v1 | deepseek-chat |
-| kimi | https://api.moonshot.cn/v1 | kimi-chat |
-| zhipu | https://open.bigmodel.cn/api/paas/v4 | glm-4-flash |
-| hunyuan | https://hunyuan.tencent.com/proxy/v1 | hunyuan-standard |
-| wenxin | https://qianfan.baidubce.com/v2 | ernie-3.5-8k |
-| siliconflow | https://api.siliconflow.cn/v1 | Qwen/Qwen2-7B-Instruct |
+| minimax | https://api.minimax.chat/v1 | abab6.5s-chat (默认), abab6.5g-chat, abab6.5s-chat-200k, abab1.8s-chat, abab6s-chat |
+| bailian | https://dashscope.aliyuncs.com/compatible-mode/v1 | qwen-plus, qwen-turbo, qwen-max, qwen-long |
+| deepseek | https://api.deepseek.com/v1 | deepseek-chat, deepseek-coder |
+| kimi | https://api.moonshot.cn/v1 | kimi-chat, kimi-chat-latest |
+| zhipu | https://open.bigmodel.cn/api/paas/v4 | glm-4, glm-4-flash, glm-3-turbo |
+| hunyuan | https://hunyuan.tencent.com/proxy/v1 | hunyuan-pro, hunyuan-standard |
+| wenxin | https://qianfan.baidubce.com/v2 | ernie-4.0-8k, ernie-3.5-8k, ernie-speed-8k |
+| siliconflow | https://api.siliconflow.cn/v1 | Qwen/Qwen2-7B-Instruct, THUDM/glm-4-9b-chat, deepseek-ai/DeepSeek-V2-Chat |
 
 ### 🌍 国外
 
