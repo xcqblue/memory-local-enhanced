@@ -4,13 +4,14 @@
 
 [![OpenClaw Plugin](https://img.shields.io/badge/OpenClaw-Plugin-blue)](https://github.com/openclaw/openclaw)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.8.0-blue)](https://github.com/xcqblue/algo-memory)
+[![Version](https://img.shields.io/badge/Version-1.9.0-blue)](https://github.com/xcqblue/algo-memory)
 
 ## ✨ 特性
 
 - ✅ **0 API 依赖** - 完全本地运行，无需外部服务
 - ✅ **可选 LLM 增强** - 支持 OpenAI/Ollama 等
 - ✅ **高性能** - 写入 4000+ 条/秒，读取 30000+ 次/秒
+- ✅ **FTS5 全文搜索** - SQLite 内置全文搜索引擎，搜索更精准
 - ✅ **智能去重** - Jaccard 相似度 + 可选 LLM 判断
 - ✅ **核心记忆** - 关键词识别重要信息
 - ✅ **三层晋升** - peripheral → working → core
@@ -18,7 +19,9 @@
 - ✅ **噪声过滤** - 过滤低质量内容
 - ✅ **自适应检索** - 智能触发召回
 - ✅ **多 Scope 隔离** - agent/user/global
+- ✅ **错误恢复** - 数据库连接自动重连
 - ✅ **11 个工具** - 完整的记忆管理
+- ✅ **多语言支持** - 中文/英文/日文/韩文/西班牙文/法文/德文
 
 ---
 
@@ -78,11 +81,12 @@ npm install
           "maxResults": 5,
           "capturePerTurn": 3,
           "cleanupDays": 180,
+          "language": "auto",
           "recencyDecay": true,
           "recencyHalfLife": 180,
           "smartDedup": true,
           "dedupThreshold": 0.85,
-          "coreKeywords": ["记住", "重要", "不要忘记", "永远记住", "牢记"],
+          "coreKeywords": ["记住", "重要", "不要忘记", "remember", "important"],
           "noiseFilter": {
             "enabled": true,
             "skipGreetings": true,
@@ -91,7 +95,7 @@ npm install
           "adaptiveRetrieval": {
             "enabled": true,
             "minQueryLength": 2,
-            "forceKeywords": ["之前", "上次", "记得", "以前"]
+            "forceKeywords": ["之前", "上次", "记得", "remember", "before"]
           },
           "sessionMemory": {
             "enabled": true,
@@ -102,6 +106,24 @@ npm install
             "coreThreshold": 3,
             "peripheralThreshold": 0.3,
             "ageDays": 90
+          },
+          "weibullDecay": {
+            "enabled": false,
+            "shape": 1.5,
+            "scale": 90
+          },
+          "reinforcement": {
+            "enabled": true,
+            "factor": 0.1,
+            "maxMultiplier": 2.0
+          },
+          "mmr": {
+            "enabled": false,
+            "threshold": 0.85
+          },
+          "scopes": {
+            "enabled": false,
+            "defaultScope": "agent"
           },
           "llm": {
             "enabled": false,
@@ -150,25 +172,22 @@ npm install
 
 algo-memory 支持多语言核心关键词识别：
 
-### 中文核心关键词（默认）
+| 语言 | 代码 | 核心关键词 |
+|------|------|-----------|
+| 中文 | `zh` | 记住、重要、永久保留 |
+| English | `en` | remember, important, never forget |
+| 日本語 | `ja` | 覚えて, 重要, 忘れないで |
+| 한국어 | `ko` | 기억, 중요, 잊지마 |
+| Español | `es` | recordar, importante |
+| Français | `fr` | rappeler, important |
+| Deutsch | `de` | merken, wichtig |
 
-```
-记住, 重要, 不要忘记, 永远记住, 牢记, 别忘了, 记住这点
-```
-
-### English Core Keywords
-
+使用方式：
 ```json
 {
-  "coreKeywords": ["remember", "important", "never forget", "always", "keep in mind", "note that"]
-}
-```
-
-### 日本語コアキーワード
-
-```json
-{
-  "coreKeywords": ["覚えて", "重要", "忘れないで", "常に", "心に留めて"]
+  "language": "auto",  // 自动检测
+  "language": "zh",    // 强制中文
+  "language": "en"     // 强制英文
 }
 ```
 
@@ -181,6 +200,7 @@ algo-memory 支持多语言核心关键词识别：
 | 写入 | 4,000+ 条/秒 |
 | 读取 | 30,000+ 次/秒 |
 | 统计 | 100,000 次/秒 |
+| FTS5 搜索 | 高精度全文搜索 |
 
 ---
 
@@ -188,6 +208,7 @@ algo-memory 支持多语言核心关键词识别：
 
 - **位置**: `~/.openclaw/workspace/algo-memory/memories.db`
 - **格式**: SQLite (WAL 模式)
+- **索引**: 6 个索引 + FTS5 全文索引
 - **自动清理**: 180 天后自动清理 peripheral 记忆
 
 ---
@@ -205,7 +226,8 @@ openclaw logs | grep algo-memory
 预期输出：
 ```
 [algo-memory] 插件注册完成, 工具数: 11, 自动启用: true
-[algo-memory] 数据库初始化完成
+[algo-memory] 数据库初始化: /home/x/.openclaw/workspace/algo-memory/memories.db
+[algo-memory] FTS5 全文搜索已启用
 ```
 
 ---

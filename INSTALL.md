@@ -7,6 +7,8 @@ algo-memory 是一个纯算法长期记忆插件，专为 OpenClaw 设计：
 - **可选 LLM 增强**：支持 OpenAI/Ollama 等 LLM 提升准确性
 - **本地存储**：所有数据保存在本地 SQLite
 - **高性能**：写入 4000+ 条/秒，读取 30000+ 次/秒
+- **FTS5 全文搜索**：SQLite 内置高精度搜索引擎
+- **错误恢复**：数据库连接自动重连
 
 ## 环境要求
 
@@ -36,9 +38,9 @@ npm install
 # 1. 克隆插件
 cd ~/.openclaw/workspace
 git clone https://github.com/xcqblue/algo-memory.git plugins/algo-memory
-cd plugins/algo-memory
 
 # 2. 安装依赖
+cd plugins/algo-memory
 npm install
 ```
 
@@ -149,7 +151,9 @@ npm install
           "threshold": {
             "useLlmForCore": true,
             "useLlmForExtract": false,
-            "useLlmForDedup": false
+            "useLlmForDedup": false,
+            "lengthForCore": 100,
+            "lengthForExtract": 200
           }
         }
       }
@@ -181,8 +185,9 @@ openclaw logs --follow --plain | grep algo-memory
 
 预期输出：
 ```
-[algo-memory] 插件注册完成, 工具数: 11, 每轮写入: 3条
+[algo-memory] 插件注册完成, 工具数: 11, 自动启用: true
 [algo-memory] 数据库初始化: /home/x/.openclaw/workspace/algo-memory/memories.db
+[algo-memory] FTS5 全文搜索已启用
 ```
 
 ---
@@ -194,6 +199,7 @@ openclaw logs --follow --plain | grep algo-memory
 - [ ] 插件加载无报错
 - [ ] 工具注册成功 (11个)
 - [ ] 钩子注册成功
+- [ ] FTS5 全文搜索启用
 
 ---
 
@@ -208,6 +214,12 @@ A: 确保 `plugins.slots.memory` 绑定到正确的插件 ID。
 ### Q: 报错 better-sqlite3？
 A: 需要重新编译: `npm rebuild better-sqlite3`
 
+### Q: FTS5 搜索失败？
+A: FTS5 创建失败时会自动回退到 LIKE 查询，不影响正常使用。
+
+### Q: 数据库连接失败？
+A: 插件会自动尝试重连，如果持续失败请检查数据库文件权限。
+
 ---
 
 ## 完整配置参考
@@ -217,8 +229,9 @@ A: 需要重新编译: `npm rebuild better-sqlite3`
   "autoCapture": true,
   "autoRecall": true,
   "maxResults": 5,
-  "cleanupDays": 180,
   "capturePerTurn": 3,
+  "cleanupDays": 180,
+  "language": "auto",
   "recencyDecay": true,
   "recencyHalfLife": 180,
   "smartDedup": true,
@@ -297,7 +310,7 @@ A: 需要重新编译: `npm rebuild better-sqlite3`
 | 工具名 | 说明 |
 |--------|------|
 | `algo_memory_list` | 列出所有记忆 |
-| `algo_memory_search` | 搜索记忆 |
+| `algo_memory_search` | 搜索记忆 (FTS5) |
 | `algo_memory_stats` | 查看统计 |
 | `algo_memory_get` | 获取单条记忆 |
 | `algo_memory_delete` | 删除记忆 |
@@ -313,5 +326,5 @@ A: 需要重新编译: `npm rebuild better-sqlite3`
 ## 更多信息
 
 - GitHub: https://github.com/xcqblue/algo-memory
-- 版本: 1.7.0
+- 版本: 1.9.0
 - 问题反馈: https://github.com/xcqblue/algo-memory/issues
