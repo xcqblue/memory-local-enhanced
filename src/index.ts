@@ -1,5 +1,5 @@
 /**
- * algo-memory v1.5.0
+ * algo-memory v1.7.0
  * 纯算法长期记忆插件 - 0 API / 可选 LLM 增强
  * 借鉴 memory-lancedb-pro 架构优化
  */
