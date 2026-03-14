@@ -14,7 +14,7 @@
 }
 ```
 
-**零配置自动启用！**
+**零配置自动启用所有功能！**
 
 ---
 
@@ -31,9 +31,7 @@
           "autoCapture": true,
           "autoRecall": true,
           "maxResults": 5,
-          "capturePerTurn": 3,
           "cleanupDays": 180,
-          "language": "auto",
           "recencyDecay": true,
           "recencyHalfLife": 180,
           "smartDedup": true,
@@ -53,12 +51,12 @@
           },
           
           "sessionMemory": {
-            "enabled": true,
+            "enabled": false,
             "maxSessionItems": 10
           },
           
           "tier": {
-            "enabled": true,
+            "enabled": false,
             "coreThreshold": 3,
             "peripheralThreshold": 0.3,
             "ageDays": 90
@@ -71,7 +69,7 @@
           },
           
           "reinforcement": {
-            "enabled": true,
+            "enabled": false,
             "factor": 0.1,
             "maxMultiplier": 2.0
           },
@@ -90,7 +88,7 @@
           "llm": {
             "enabled": true,
             "provider": "auto",
-            "apiKey": "${API_KEY}",
+            "apiKey": "",
             "model": "",
             "baseURL": ""
           },
@@ -99,6 +97,7 @@
             "useLlmForCore": false,
             "useLlmForExtract": false,
             "useLlmForDedup": false,
+            "minConfidence": 0.8,
             "lengthForCore": 100,
             "lengthForExtract": 200,
             "dedupUncertaintyMin": 0.5,
@@ -216,7 +215,7 @@
 
 | provider | baseURL | 可选模型 |
 |----------|---------|----------|
-| minimax | https://api.minimax.chat/v1 | abab6.5s-chat (默认), abab6.5g-chat, abab6.5s-chat-200k, abab1.8s-chat, abab6s-chat |
+| minimax | https://api.minimax.chat/v1 | abab6.5s-chat, abab6.5g-chat, abab6.5s-chat-200k, abab1.8s-chat, abab6s-chat |
 | bailian | https://dashscope.aliyuncs.com/compatible-mode/v1 | qwen-plus, qwen-turbo, qwen-max, qwen-long |
 | deepseek | https://api.deepseek.com/v1 | deepseek-chat, deepseek-coder |
 | kimi | https://api.moonshot.cn/v1 | kimi-chat, kimi-chat-latest |
@@ -232,3 +231,55 @@
 | openai | https://api.openai.com/v1 | gpt-4o-mini |
 | anthropic | https://api.anthropic.com/v1 | claude-3-haiku |
 | ollama | http://localhost:11434/v1 | llama2 |
+
+---
+
+## LLM 阈值触发说明
+
+LLM 仅在以下情况触发，避免不必要的 API 调用：
+
+| 场景 | 触发条件 |
+|------|----------|
+| **核心判断** | 内容长度 ≥ `lengthForCore` (默认100字符) |
+| **关键词提取** | 内容长度 ≥ `lengthForExtract` (默认200字符) |
+| **去重判断** | 相似度在 [0.5, 0.98] 区间 |
+
+---
+
+## Agent 隔离示例
+
+### 示例 1：默认隔离
+
+```json
+{
+  "scopes": {
+    "enabled": true,
+    "visibleAgents": []
+  }
+}
+```
+- 每个 Agent 只能看自己的记忆
+
+### 示例 2：查看全部
+
+```json
+{
+  "scopes": {
+    "enabled": true,
+    "visibleAgents": ["*"]
+  }
+}
+```
+- 所有 Agent 可以互相查看记忆
+
+### 示例 3：部分共享
+
+```json
+{
+  "scopes": {
+    "enabled": true,
+    "visibleAgents": ["assistant", "helper"]
+  }
+}
+```
+- Agent A 可以看自己 + assistant + helper 的记忆
