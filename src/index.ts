@@ -297,21 +297,23 @@ class MemoryPlugin {
       // 智能去重
       if (this.config.smartDedup) {
         const similar = this.db.prepare("SELECT id, content FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT 10").all(AgentId) as { id: string; content: string }[];
+        let isDuplicate = false;
         for (const s of similar) {
-          let isDup = false, score = jaccardSimilarity(safeContent, s.content);
+          let score = jaccardSimilarity(safeContent, s.content);
           if (this.config.threshold.useLlmForDedup && this.llmClient && score >= 0.5 && score < 0.98) {
             const r = await this.llmClient.isDuplicate(safeContent, s.content);
-            isDup = r.isDuplicate; score = r.similarity;
-          } else if (score >= 0.98) { isDup = true; }
-          if (isDup) {
+            isDuplicate = r.isDuplicate;
+          } else {
+            isDuplicate = score >= 0.98;
+          }
+          if (isDuplicate) {
             this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(Date.now(), s.id);
             this.cache.delete(`recall:${AgentId}`);
-            captured++;
-            break;
+            this.updateTier(s.id);
+            break;  // 找到重复，跳过写入
           }
         }
-        if (captured >= maxCapture) break;
-        continue;
+        if (isDuplicate) continue;  // 已处理重复，跳过本次
       }
 
       // 核心判断
