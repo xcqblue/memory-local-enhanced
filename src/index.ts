@@ -17,6 +17,7 @@ interface Config {
   autoRecall: boolean;
   maxResults: number;
   cleanupDays: number;
+  language: string;  // auto, zh, en, ja, ko, es, fr, de
   coreKeywords: string[];
   recencyDecay: boolean;
   recencyHalfLife: number;
@@ -58,14 +59,14 @@ const DEFAULT_CONFIG: Config = {
   autoRecall: true,
   maxResults: 5,
   cleanupDays: 180,
-  coreKeywords: ['记住', '牢记', '重要', '不要忘记', '记住它', '这是关键', '永久保留', '一直记住', '别忘了', 'remember', 'important', 'never forget', 'always remember'],
+  language: 'auto',  // auto, zh, en, ja, ko, es, fr, de
   recencyDecay: true,
   recencyHalfLife: 180,
   smartDedup: true,
   dedupThreshold: 0.85,
   // 基础
   noiseFilter: { enabled: true, skipGreetings: true, skipCommands: true },
-  adaptiveRetrieval: { enabled: true, minQueryLength: 2, forceKeywords: ['记住', '之前', '上次', '记得', 'remember', 'before', 'last'] },
+  adaptiveRetrieval: { enabled: true, minQueryLength: 2, forceKeywords: ['记住', '之前', '上次', '记得', 'remember', 'before', 'last', '前', '上次'] },
   sessionMemory: { enabled: false, maxSessionItems: 10 },
   // 进阶
   weibullDecay: { enabled: false, shape: 1.5, scale: 90 },
@@ -131,6 +132,50 @@ function isNoise(content: string, config: Config['noiseFilter']): boolean {
   if (!lower || /^[.。!?！?\s]+$/.test(lower)) return true;
   return false;
 }
+
+// ============= Multi-language Support =============
+const CORE_KEYWORDS_MAP: Record<string, string[]> = {
+  zh: ['记住', '牢记', '重要', '不要忘记', '记住它', '这是关键', '永久保留', '一直记住', '别忘了'],
+  en: ['remember', 'important', 'never forget', 'always remember', 'keep in mind', 'note that', 'must remember', 'critical'],
+  ja: ['覚えて', '重要', '忘れないで', '常に', '心に留めて', '鍵'],
+  ko: ['기억', '중요', '잊지마', '반드시', '핵심'],
+  es: ['recordar', 'importante', 'nunca olvides', 'ten en mente', 'esencial'],
+  fr: ['rappelez', 'important', 'noubliez jamais', 'à retenir', 'essentiel'],
+  de: ['merken', 'wichtig', 'nie vergessen', 'behalten', 'wesentlich']
+};
+
+const RETRIEVE_KEYWORDS_MAP: Record<string, string[]> = {
+  zh: ['记住', '之前', '上次', '记得', '以前'],
+  en: ['remember', 'before', 'last', 'previously', 'earlier'],
+  ja: ['覚えて', '以前', '前に'],
+  ko: ['기억', '이전', '전에'],
+  es: ['recordar', 'antes', 'anterior'],
+  fr: ['rappelez', 'avant', 'précédemment'],
+  de: ['merken', 'vorher', 'früher']
+};
+
+function detectLanguage(text: string): string {
+  if (!text) return 'en';
+  const patterns: Record<string, RegExp> = { zh: /[\u4e00-\u9fa5]/g, ja: /[\u3040-\u309f\u30a0-\u30ff]/g, ko: /[\uac00-\ud7af]/g };
+  let maxLang = 'en', maxCount = 0;
+  for (const [lang, pattern] of Object.entries(patterns)) {
+    const count = (text.match(pattern) || []).length;
+    if (count > maxCount) { maxCount = count; maxLang = lang; }
+  }
+  return maxLang;
+}
+
+function getCoreKeywords(language: string, customKeywords?: string[]): string[] {
+  if (customKeywords && customKeywords.length > 0) return customKeywords;
+  if (language === 'auto') return CORE_KEYWORDS_MAP.zh.concat(CORE_KEYWORDS_MAP.en);
+  return CORE_KEYWORDS_MAP[language] || CORE_KEYWORDS_MAP.en;
+}
+
+function getRetrieveKeywords(language: string): string[] {
+  if (language === 'auto') return RETRIEVE_KEYWORDS_MAP.zh.concat(RETRIEVE_KEYWORDS_MAP.en);
+  return RETRIEVE_KEYWORDS_MAP[language] || RETRIEVE_KEYWORDS_MAP.en;
+}
+// ============= End Multi-language Support =============
 
 // CJK + 自适应检索
 function shouldRetrieve(query: string, config: Config['adaptiveRetrieval']): boolean {
