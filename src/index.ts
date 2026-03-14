@@ -1,9 +1,9 @@
 /**
- * algo-memory v2.0.0
+ * algo-memory v2.1.0
  * 纯算法长期记忆插件 - 默认启用 LLM / 支持多模型
  * 支持多语言: zh/en/ja/ko/es/fr/de
  * 支持 FTS5 全文搜索
- * 支持 MiniMax / OpenAI / Anthropic / Google / Cohere / Ollama / SiliconFlow
+ * 支持国内主流模型: MiniMax/百炼/DeepSeek/Kimi/智谱/腾讯/百度
  */
 
 import { Type } from '@sinclair/typebox';
@@ -258,49 +258,78 @@ function getTier(importance: number, accessCount: number, daysOld: number, confi
 // 睡眠辅助函数
 function sleep(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }
 
-// LLM 模型配置
+// LLM 模型配置（国内为主）
 const LLM_PROVIDERS = {
+  // ===== 国内模型 =====
+  
   // MiniMax (默认推荐)
   minimax: {
     baseURL: 'https://api.minimax.chat/v1',
     models: ['abab6.5s-chat', 'abab6.5g-chat', 'abab6s-chat'],
     defaultModel: 'abab6.5s-chat'
   },
-  // OpenAI
+  // 阿里云百炼
+  bailian: {
+    baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    models: ['qwen-plus', 'qwen-turbo', 'qwen-max', 'qwen-long'],
+    defaultModel: 'qwen-plus'
+  },
+  // DeepSeek
+  deepseek: {
+    baseURL: 'https://api.deepseek.com/v1',
+    models: ['deepseek-chat', 'deepseek-coder'],
+    defaultModel: 'deepseek-chat'
+  },
+  // Kimi (月之暗面)
+  kimi: {
+    baseURL: 'https://api.moonshot.cn/v1',
+    models: ['kimi-chat', 'kimi-chat-latest'],
+    defaultModel: 'kimi-chat'
+  },
+  // 智谱 AI
+  zhipu: {
+    baseURL: 'https://open.bigmodel.cn/api/paas/v4',
+    models: ['glm-4', 'glm-4-flash', 'glm-3-turbo'],
+    defaultModel: 'glm-4-flash'
+  },
+  // 腾讯混元
+  hunyuan: {
+    baseURL: 'https://hunyuan.tencent.com/proxy/v1',
+    models: ['hunyuan-pro', 'hunyuan-standard'],
+    defaultModel: 'hunyuan-standard'
+  },
+  // 百度文心
+  wenxin: {
+    baseURL: 'https://qianfan.baidubce.com/v2',
+    models: ['ernie-4.0-8k', 'ernie-3.5-8k', 'ernie-speed-8k'],
+    defaultModel: 'ernie-3.5-8k'
+  },
+  // SiliconFlow (国内聚合)
+  siliconflow: {
+    baseURL: 'https://api.siliconflow.cn/v1',
+    models: ['Qwen/Qwen2-7B-Instruct', 'THUDM/glm-4-9b-chat', 'deepseek-ai/DeepSeek-V2-Chat'],
+    defaultModel: 'Qwen/Qwen2-7B-Instruct'
+  },
+  
+  // ===== 国外模型（保留少量） =====
+  
+  // OpenAI (可选)
   openai: {
     baseURL: 'https://api.openai.com/v1',
-    models: ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo'],
+    models: ['gpt-4o-mini'],
     defaultModel: 'gpt-4o-mini'
   },
-  // Anthropic
+  // Anthropic (可选)
   anthropic: {
     baseURL: 'https://api.anthropic.com/v1',
-    models: ['claude-3-haiku-20240307', 'claude-3-sonnet-20240229'],
+    models: ['claude-3-haiku-20240307'],
     defaultModel: 'claude-3-haiku-20240307'
-  },
-  // Google
-  google: {
-    baseURL: 'https://generativelanguage.googleapis.com/v1',
-    models: ['gemini-1.5-flash', 'gemini-1.5-pro'],
-    defaultModel: 'gemini-1.5-flash'
-  },
-  // Cohere
-  cohere: {
-    baseURL: 'https://api.cohere.ai/v1',
-    models: ['command-r', 'command-r-plus'],
-    defaultModel: 'command-r'
   },
   // Ollama (本地)
   ollama: {
     baseURL: 'http://localhost:11434/v1',
-    models: ['llama2', 'mistral', 'codellama'],
+    models: ['llama2', 'mistral'],
     defaultModel: 'llama2'
-  },
-  // SiliconFlow (国内)
-  siliconflow: {
-    baseURL: 'https://api.siliconflow.cn/v1',
-    models: ['Qwen/Qwen2-7B-Instruct', 'THUDM/glm-4-9b-chat'],
-    defaultModel: 'Qwen/Qwen2-7B-Instruct'
   }
 };
 
@@ -310,7 +339,7 @@ function resolveLLMConfig(config: Config['llm']): Config['llm'] {
   
   // 如果 provider 是 auto，自动检测
   if (config.provider === 'auto' || !config.provider) {
-    // 优先使用 MiniMax（国内访问快）
+    // 优先使用 MiniMax（默认推荐，国内访问快）
     return { ...config, provider: 'minimax', ...LLM_PROVIDERS.minimax };
   }
   
