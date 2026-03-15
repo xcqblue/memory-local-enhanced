@@ -24,11 +24,11 @@
   },
   "dependencies": {
     "@sinclair/typebox": "^0.32.0",
-    "lru-cache": "^10.0.0"
+    "lru-cache": "^7.18.3",
+    "better-sqlite3": "^11.7.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "better-sqlite3": "^12.6.2",
     "typescript": "^5.0.0"
   },
   "openclaw": {

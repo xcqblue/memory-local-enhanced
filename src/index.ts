@@ -9,7 +9,8 @@
 
 import { Type } from '@sinclair/typebox';
 import LRUCache from 'lru-cache';
-import Database from 'better-sqlite3';
+import BetterSqlite3 from 'better-sqlite3';
+type DatabaseType = BetterSqlite3;
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -398,7 +399,7 @@ class LLMClient {
   async isCoreMemory(content: string): Promise<{ isCore: boolean; confidence: number }> {
     const localResult = isCoreKeyword(content, this.config.coreKeywords);
     if (localResult) return { isCore: true, confidence: 1.0 };
-    if (!this.config.llm.enabled) return { isCore: false, confidence: 0.5 };
+    if (!this.config.llm.enabled || !this.config.llm.apiKey) return { isCore: false, confidence: 0.5 };
     
     try {
       const result = await llmCallWithRetry(async () => {
@@ -407,7 +408,8 @@ class LLMClient {
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
           body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '判断是否重要需要长期记住。回复JSON: {"isCore": true/false, "confidence": 0-1}' }, { role: 'user', content }], max_tokens: 100, temperature: 0.1 })
         });
-        return JSON.parse((await response.json()).choices[0].message.content);
+        const jsonResponse = await response.json() as any;
+        return JSON.parse(jsonResponse.choices[0].message.content);
       }, 2, 1000);
       return result;
     } catch (err) { this.log.error('[algo-memory] LLM isCoreMemory 失败:', err); return { isCore: false, confidence: 0.5 }; }
@@ -415,7 +417,7 @@ class LLMClient {
   
   async extractKeywords(content: string): Promise<string> {
     const local = extractKeywords(content);
-    if (!this.config.llm.enabled) return local;
+    if (!this.config.llm.enabled || !this.config.llm.apiKey) return local;
     try {
       const result = await llmCallWithRetry(async () => {
         const response = await fetch(`${this.config.llm.baseURL}/chat/completions`, {
@@ -423,7 +425,8 @@ class LLMClient {
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
           body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '提取关键词，最多10个。回复JSON: {"keywords": ["k1", "k2"]}' }, { role: 'user', content }], max_tokens: 200, temperature: 0.2 })
         });
-        return JSON.parse((await response.json()).choices[0].message.content).keywords.join(',');
+        const jsonResponse2 = await response.json() as any;
+        return JSON.parse(jsonResponse2.choices[0].message.content).keywords.join(',');
       }, 2, 1000);
       return result;
     } catch (err) { this.log.error('[algo-memory] LLM extractKeywords 失败:', err); return local; }
@@ -432,7 +435,7 @@ class LLMClient {
   async isDuplicate(c1: string, c2: string): Promise<{ isDuplicate: boolean; similarity: number }> {
     const sim = jaccardSimilarity(c1, c2);
     if (sim >= 0.98 || sim < 0.5) return { isDuplicate: sim >= 0.98, similarity: sim };
-    if (!this.config.llm.enabled) return { isDuplicate: false, similarity: sim };
+    if (!this.config.llm.enabled || !this.config.llm.apiKey) return { isDuplicate: false, similarity: sim };
     try {
       const result = await llmCallWithRetry(async () => {
         const response = await fetch(`${this.config.llm.baseURL}/chat/completions`, {
@@ -440,7 +443,8 @@ class LLMClient {
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.llm.apiKey}` },
           body: JSON.stringify({ model: this.config.llm.model, messages: [{ role: 'system', content: '判断是否重复。回复JSON: {"isDuplicate": true/false, "similarity": 0-1}' }, { role: 'user', content: `内容1: ${c1}\n内容2: ${c2}` }], max_tokens: 100, temperature: 0.1 })
         });
-        return JSON.parse((await response.json()).choices[0].message.content);
+        const jsonResponse3 = await response.json() as any;
+        return JSON.parse(jsonResponse3.choices[0].message.content);
       }, 2, 1000);
       return result;
     } catch (err) { this.log.error('[algo-memory] LLM isDuplicate 失败:', err); return { isDuplicate: sim >= this.config.dedupThreshold, similarity: sim }; }
@@ -449,7 +453,8 @@ class LLMClient {
 
 // ============= 核心类 =============
 class MemoryPlugin {
-  private db: Database.Database | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private db: any = null;
   private dbPath: string = '';  // 数据库路径，用于重连
   private cache: LRUCache<string, any>;
   private sessionCache: LRUCache<string, any>;
@@ -463,13 +468,13 @@ class MemoryPlugin {
     this.log = log;
     this.cache = new LRUCache({ max: 100, ttl: 5 * 60 * 1000 });
     this.sessionCache = new LRUCache({ max: 50, ttl: 30 * 60 * 1000 });
-    if (this.config.llm.enabled) this.llmClient = new LLMClient(this.config, log);
+    if (this.config.llm.enabled && this.config.llm.apiKey) this.llmClient = new LLMClient(this.config, log);
   }
 
   async init(stateDir: string): Promise<void> {
     if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
     this.dbPath = path.join(stateDir, 'memories.db');
-    this.db = new Database(this.dbPath);
+    this.db = new (BetterSqlite3 as any)(this.dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
     this.db.pragma('synchronous = NORMAL');
@@ -558,7 +563,7 @@ class MemoryPlugin {
     } catch (err) {
       this.log.error('[algo-memory] 数据库连接失败，尝试重连:', err);
       try {
-        this.db = new Database(this.dbPath);
+        this.db = new (BetterSqlite3 as any)(this.dbPath);
         this.db.pragma('journal_mode = WAL');
       } catch (reconnectErr) {
         this.log.error('[algo-memory] 数据库重连失败:', reconnectErr);

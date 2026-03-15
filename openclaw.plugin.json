@@ -8,7 +8,7 @@
   "installDependencies": true,
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
+    "additionalProperties": true,
     "properties": {
       "autoCapture": { "type": "boolean", "default": true, "description": "自动捕获对话记忆" },
       "autoRecall": { "type": "boolean", "default": true, "description": "自动召回相关记忆" },
