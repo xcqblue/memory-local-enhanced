@@ -879,10 +879,10 @@ class MemoryPlugin {
     if (!this.db) return []; 
     const visibleAgentIds = this.getVisibleAgentIds(AgentId);
     if (visibleAgentIds.includes('%')) {
-      return this.db.prepare('SELECT * FROM memories').all() as any[];
+      return this.queryAll('SELECT * FROM memories');
     }
     const placeholders = visibleAgentIds.map(() => '?').join(',');
-    return this.db.prepare(`SELECT * FROM memories WHERE agent_id IN (${placeholders})`).all(...visibleAgentIds) as any[];
+    return this.queryAll(`SELECT * FROM memories WHERE agent_id IN (${placeholders})`, visibleAgentIds);
   }
   importMemories(AgentId: string, memories: any[]): number {
     if (!this.db) return 0;
@@ -899,15 +899,46 @@ class MemoryPlugin {
     return imported;
   }
 
-  close(): void { if (this.cleanupInterval) { clearInterval(this.cleanupInterval); this.cleanupInterval = null; } if (this.db) { this.db.close(); this.db = null; } this.log.info('[algo-memory] 插件关闭'); }
+  close(): void { if (this.cleanupInterval) { clearInterval(this.cleanupInterval); this.cleanupInterval = null; } if (this.db) { this.saveDatabase(); this.db.close(); this.db = null; } this.log.info('[algo-memory] 插件关闭'); }
 }
 
-// 导出 register 函数（符合 OpenClaw 官方规范）
-export default function register(api: any): void {
-  const log = api.logger || console;
-  const plugin = new MemoryPlugin(api.pluginConfig || {}, log);
-  const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
-  plugin.init(stateDir);
+// OpenClaw 插件导出（符合官方规范）
+const algoMemoryPlugin = {
+  id: "algo-memory",
+  name: "Algo Memory",
+  description: "纯算法长期记忆插件 - 支持多模型/智能去重/时间衰减",
+  kind: "memory" as const,
+  configSchema: {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      autoCapture: { type: "boolean", default: true },
+      autoRecall: { type: "boolean", default: true },
+      maxResults: { type: "number", default: 5 },
+      cleanupDays: { type: "number", default: 180 },
+      recencyDecay: { type: "boolean", default: true },
+      recencyHalfLife: { type: "number", default: 180 },
+      smartDedup: { type: "boolean", default: true },
+      dedupThreshold: { type: "number", default: 0.85 },
+      capturePerTurn: { type: "number", default: 3 },
+      llm: { 
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", default: true },
+          provider: { type: "string", default: "auto" },
+          apiKey: { type: "string" },
+          model: { type: "string" },
+          baseURL: { type: "string" }
+        }
+      }
+    }
+  },
+
+  register(api: any) {
+    const log = api.logger || console;
+    const plugin = new MemoryPlugin(api.pluginConfig || {}, log);
+    const stateDir = api.getStateDir?.() || path.join(process.env.HOME || '/home/x', '.openclaw', 'workspace', 'algo-memory');
+    plugin.init(stateDir);
 
   // 工具定义（使用 Typebox 符合官方规范）
   const toolDefinitions = [
@@ -1106,4 +1137,7 @@ export default function register(api: any): void {
   });
   const isAutoEnabled = !userConfig.enabled && Object.keys(userConfig).length === 0;
   log.info(`[algo-memory] 插件注册完成, 工具数: ${toolDefinitions.length}, 自动启用: ${isAutoEnabled}, 捕获: ${cfg.autoCapture}, 召回: ${cfg.autoRecall}, 每轮写入: ${cfg.capturePerTurn}条`);
-}
+  }
+};
+
+export default algoMemoryPlugin;
