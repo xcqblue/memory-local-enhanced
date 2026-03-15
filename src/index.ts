@@ -9,8 +9,7 @@
 
 import { Type } from '@sinclair/typebox';
 import LRUCache from 'lru-cache';
-import BetterSqlite3 from 'better-sqlite3';
-type DatabaseType = BetterSqlite3;
+import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -455,7 +454,8 @@ class LLMClient {
 class MemoryPlugin {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private db: any = null;
-  private dbPath: string = '';  // 数据库路径，用于重连
+  private dbPath: string = '';  // 数据库路径，用于保存
+  private SQL: any = null;  // sql.js 初始化结果
   private cache: LRUCache<string, any>;
   private sessionCache: LRUCache<string, any>;
   private cleanupInterval: NodeJS.Timeout | null = null;
@@ -474,58 +474,108 @@ class MemoryPlugin {
   async init(stateDir: string): Promise<void> {
     if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
     this.dbPath = path.join(stateDir, 'memories.db');
-    this.db = new (BetterSqlite3 as any)(this.dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('busy_timeout = 5000');
-    this.db.pragma('synchronous = NORMAL');
-    this.db.exec(`
+    
+    // 初始化 sql.js
+    const SQL = await initSqlJs();
+    this.SQL = SQL;
+    
+    // 尝试加载已有数据库
+    if (fs.existsSync(this.dbPath)) {
+      try {
+        const fileBuffer = fs.readFileSync(this.dbPath);
+        this.db = new SQL.Database(fileBuffer);
+      } catch (err) {
+        this.log.warn('[algo-memory] 加载数据库失败，创建新数据库:', err);
+        this.db = new SQL.Database();
+      }
+    } else {
+      this.db = new SQL.Database();
+    }
+    
+    // 创建表
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, scope TEXT DEFAULT 'agent',
         content TEXT NOT NULL, type TEXT DEFAULT 'other', tier TEXT DEFAULT 'working',
         layer TEXT DEFAULT 'general', keywords TEXT, importance REAL DEFAULT 0.5,
         access_count INTEGER DEFAULT 0, created_at INTEGER, last_accessed INTEGER, content_hash TEXT,
         metadata TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_agent ON memories(agent_id);
-      CREATE INDEX IF NOT EXISTS idx_tier ON memories(tier);
-      CREATE INDEX IF NOT EXISTS idx_scope ON memories(scope);
-      CREATE INDEX IF NOT EXISTS idx_agent_hash ON memories(agent_id, content_hash);
-      CREATE INDEX IF NOT EXISTS idx_agent_tier_importance ON memories(agent_id, tier, importance DESC);
-      CREATE INDEX IF NOT EXISTS idx_agent_last_accessed ON memories(agent_id, last_accessed DESC);
+      )
     `);
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_agent ON memories(agent_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_tier ON memories(tier)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_scope ON memories(scope)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_agent_hash ON memories(agent_id, content_hash)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_agent_tier_importance ON memories(agent_id, tier, importance DESC)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_agent_last_accessed ON memories(agent_id, last_accessed DESC)');
     
     // 创建 FTS5 虚拟表用于全文搜索
     try {
-      this.db.exec(`
+      this.db.run(`
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
           id, content, keywords, content='memories', content_rowid='rowid'
-        );
+        )
       `);
-      // 创建触发器保持 FTS 同步
-      this.db.exec(`
-        CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-          INSERT INTO memories_fts(rowid, id, content, keywords) 
-          VALUES (new.rowid, new.id, new.content, new.keywords);
-        END;
-        CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-          INSERT INTO memories_fts(memories_fts, rowid, id, content, keywords) 
-          VALUES('delete', old.rowid, old.id, old.content, old.keywords);
-        END;
-        CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-          INSERT INTO memories_fts(memories_fts, rowid, id, content, keywords) 
-          VALUES('delete', old.rowid, old.id, old.content, old.keywords);
-          INSERT INTO memories_fts(rowid, id, content, keywords) 
-          VALUES (new.rowid, new.id, new.content, new.keywords);
-        END;
-      `);
+      this.db.run(`CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN INSERT INTO memories_fts(rowid, id, content, keywords) VALUES (new.rowid, new.id, new.content, new.keywords); END`);
+      this.db.run(`CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, id, content, keywords) VALUES('delete', old.rowid, old.id, old.content, old.keywords); END`);
+      this.db.run(`CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, id, content, keywords) VALUES('delete', old.rowid, old.id, old.content, old.keywords); INSERT INTO memories_fts(rowid, id, content, keywords) VALUES (new.rowid, new.id, new.content, new.keywords); END`);
       this.log.info('[algo-memory] FTS5 全文搜索已启用');
     } catch (err: any) {
       this.log.warn('[algo-memory] FTS5 创建失败，使用备用搜索:', err.message);
     }
     
+    this.saveDatabase();
     this.log.info('[algo-memory] 数据库初始化:', this.dbPath);
     this.log.info(`[algo-memory] 每轮最多写入: ${this.config.capturePerTurn} 条`);
     this.cleanupInterval = setInterval(() => this.cleanup(), 24 * 60 * 60 * 1000);
+  }
+
+  // 保存数据库到文件
+  private saveDatabase(): void {
+    if (!this.db || !this.dbPath) return;
+    try {
+      const data = this.db.export();
+      const buffer = Buffer.from(data);
+      fs.writeFileSync(this.dbPath, buffer);
+    } catch (err) {
+      this.log.error('[algo-memory] 保存数据库失败:', err);
+    }
+  }
+
+  // sql.js 辅助方法：将结果转换为对象数组
+  private queryAll(sql: string, params: any[] = []): any[] {
+    try {
+      const stmt = this.db.prepare(sql);
+      if (params.length > 0) stmt.bind(params);
+      const results: any[] = [];
+      while (stmt.step()) {
+        results.push(stmt.getAsObject());
+      }
+      stmt.free();
+      return results;
+    } catch (err) {
+      this.log.error('[algo-memory] 查询失败:', sql, err);
+      return [];
+    }
+  }
+
+  // sql.js 辅助方法：执行单条查询
+  private queryOne(sql: string, params: any[] = []): any {
+    const results = this.queryAll(sql, params);
+    return results.length > 0 ? results[0] : null;
+  }
+
+  // sql.js 辅助方法：执行更新
+  private run(sql: string, params: any[] = []): number {
+    try {
+      this.db.run(sql, params);
+      const changes = this.db.getRowsModified();
+      this.saveDatabase();  // 保存更改
+      return changes;
+    } catch (err) {
+      this.log.error('[algo-memory] 执行失败:', sql, err);
+      return 0;
+    }
   }
 
   // 获取当前 Agent 可见的 Agent 列表（用于跨Agent查询）
@@ -557,20 +607,6 @@ class MemoryPlugin {
       return;
     }
     
-    // 错误恢复：数据库连接检查
-    try {
-      this.db.prepare('SELECT 1').get();
-    } catch (err) {
-      this.log.error('[algo-memory] 数据库连接失败，尝试重连:', err);
-      try {
-        this.db = new (BetterSqlite3 as any)(this.dbPath);
-        this.db.pragma('journal_mode = WAL');
-      } catch (reconnectErr) {
-        this.log.error('[algo-memory] 数据库重连失败:', reconnectErr);
-        return;
-      }
-    }
-    
     // 边界情况处理：消息过长时截断
     const maxMessageLength = 10000;
     messages = messages.map(msg => ({
@@ -597,9 +633,9 @@ class MemoryPlugin {
       const contentHash = hashContent(safeContent);
 
       // 精确查重
-      const existing = this.db.prepare('SELECT id FROM memories WHERE agent_id = ? AND content_hash = ?').get(AgentId, contentHash) as { id: string } | undefined;
+      const existing = this.queryOne('SELECT id FROM memories WHERE agent_id = ? AND content_hash = ?', [AgentId, contentHash]);
       if (existing) {
-        this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(Date.now(), existing.id);
+        this.run('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?', [Date.now(), existing.id]);
         this.cache.delete(`recall:${AgentId}`);
         this.updateTier(existing.id);
         continue;
@@ -607,7 +643,7 @@ class MemoryPlugin {
 
       // 智能去重
       if (this.config.smartDedup) {
-        const similar = this.db.prepare("SELECT id, content FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT 10").all(AgentId) as { id: string; content: string }[];
+        const similar = this.queryAll("SELECT id, content FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT 10", [AgentId]);
         let isDuplicate = false;
         for (const s of similar) {
           let score = jaccardSimilarity(safeContent, s.content);
@@ -621,7 +657,7 @@ class MemoryPlugin {
             isDuplicate = score >= this.config.dedupThreshold;
           }
           if (isDuplicate) {
-            this.db.prepare('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?').run(Date.now(), s.id);
+            this.run('UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?', [Date.now(), s.id]);
             this.cache.delete(`recall:${AgentId}`);
             this.updateTier(s.id);
             break;  // 找到重复，跳过写入
@@ -662,7 +698,8 @@ class MemoryPlugin {
       });
 
       const memory = { id: generateId(), agent_id: AgentId, scope, content: safeContent, type: 'other', tier, layer: isCore ? 'core' : 'general', keywords, importance, access_count: 1, created_at: Date.now(), last_accessed: Date.now(), content_hash: contentHash, metadata };
-      this.db.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(memory.id, memory.agent_id, memory.scope, memory.content, memory.type, memory.tier, memory.layer, memory.keywords, memory.importance, memory.access_count, memory.created_at, memory.last_accessed, memory.content_hash, memory.metadata);
+      this.run('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 
+        [memory.id, memory.agent_id, memory.scope, memory.content, memory.type, memory.tier, memory.layer, memory.keywords, memory.importance, memory.access_count, memory.created_at, memory.last_accessed, memory.content_hash, memory.metadata]);
       captured++;
     }
     // 日志增强：记录存储操作统计和性能
@@ -677,11 +714,11 @@ class MemoryPlugin {
 
   private updateTier(memoryId: string): void {
     if (!this.config.tier.enabled || !this.db) return;
-    const mem = this.db.prepare('SELECT importance, access_count, created_at FROM memories WHERE id = ?').get(memoryId) as { importance: number; access_count: number; created_at: number };
+    const mem = this.queryOne('SELECT importance, access_count, created_at FROM memories WHERE id = ?', [memoryId]);
     if (!mem) return;
     const daysOld = (Date.now() - mem.created_at) / (1000 * 60 * 60 * 24);
     const newTier = getTier(mem.importance, mem.access_count, daysOld, this.config.tier);
-    this.db.prepare('UPDATE memories SET tier = ? WHERE id = ?').run(newTier, memoryId);
+    this.run('UPDATE memories SET tier = ? WHERE id = ?', [newTier, memoryId]);
   }
 
   async recall(AgentId: string, query: string): Promise<{ hasMemory: boolean; memories: any[] }> {
@@ -753,8 +790,8 @@ class MemoryPlugin {
   cleanup(): void {
     if (!this.db) return;
     const cutoff = Date.now() - this.config.cleanupDays * 24 * 60 * 60 * 1000;
-    const result = this.db.prepare('DELETE FROM memories WHERE last_accessed < ? AND layer = "general" AND tier = "peripheral"').run(cutoff);
-    this.log.info('[algo-memory] 清理了', result.changes, '条过期记忆');
+    const changes = this.run('DELETE FROM memories WHERE last_accessed < ? AND layer = "general" AND tier = "peripheral"', [cutoff]);
+    this.log.info('[algo-memory] 清理了', changes, '条过期记忆');
   }
 
   // 工具
@@ -762,10 +799,10 @@ class MemoryPlugin {
     if (!this.db) return []; 
     const visibleAgentIds = this.getVisibleAgentIds(AgentId);
     if (visibleAgentIds.includes('%')) {
-      return this.db.prepare('SELECT * FROM memories ORDER BY tier, importance DESC, created_at DESC LIMIT ?').all(limit) as any[];
+      return this.queryAll('SELECT * FROM memories ORDER BY tier, importance DESC, created_at DESC LIMIT ?', [limit]);
     }
     const placeholders = visibleAgentIds.map(() => '?').join(',');
-    return this.db.prepare(`SELECT * FROM memories WHERE agent_id IN (${placeholders}) ORDER BY tier, importance DESC, created_at DESC LIMIT ?`).all(...visibleAgentIds, limit) as any[];
+    return this.queryAll(`SELECT * FROM memories WHERE agent_id IN (${placeholders}) ORDER BY tier, importance DESC, created_at DESC LIMIT ?`, [...visibleAgentIds, limit]);
   }
   searchMemories(AgentId: string, query: string): any[] {
     if (!this.db) return [];
@@ -810,32 +847,32 @@ class MemoryPlugin {
   getStats(AgentId: string): { total: number; core: number; working: number; peripheral: number; general: number } {
     if (!this.db) return { total: 0, core: 0, working: 0, peripheral: 0, general: 0 };
     const visibleAgentIds = this.getVisibleAgentIds(AgentId);
-    let total, core, peripheral, general;
+    let total = 0, core = 0, peripheral = 0, general = 0;
     if (visibleAgentIds.includes('%')) {
-      total = (this.db.prepare('SELECT COUNT(*) as c FROM memories').get() as { c: number }).c;
-      core = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE tier = ?').get('core') as { c: number }).c;
-      peripheral = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE tier = ?').get('peripheral') as { c: number }).c;
-      general = (this.db.prepare('SELECT COUNT(*) as c FROM memories WHERE layer = ?').get('general') as { c: number }).c;
+      total = this.queryOne('SELECT COUNT(*) as c FROM memories')?.c || 0;
+      core = this.queryOne('SELECT COUNT(*) as c FROM memories WHERE tier = ?', ['core'])?.c || 0;
+      peripheral = this.queryOne('SELECT COUNT(*) as c FROM memories WHERE tier = ?', ['peripheral'])?.c || 0;
+      general = this.queryOne('SELECT COUNT(*) as c FROM memories WHERE layer = ?', ['general'])?.c || 0;
     } else {
       const placeholders = visibleAgentIds.map(() => '?').join(',');
-      total = (this.db.prepare(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders})`).get(...visibleAgentIds) as { c: number }).c;
-      core = (this.db.prepare(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders}) AND tier = ?`).get(...visibleAgentIds, 'core') as { c: number }).c;
-      peripheral = (this.db.prepare(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders}) AND tier = ?`).get(...visibleAgentIds, 'peripheral') as { c: number }).c;
-      general = (this.db.prepare(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders}) AND layer = ?`).get(...visibleAgentIds, 'general') as { c: number }).c;
+      total = this.queryOne(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders})`, visibleAgentIds)?.c || 0;
+      core = this.queryOne(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders}) AND tier = ?`, [...visibleAgentIds, 'core'])?.c || 0;
+      peripheral = this.queryOne(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders}) AND tier = ?`, [...visibleAgentIds, 'peripheral'])?.c || 0;
+      general = this.queryOne(`SELECT COUNT(*) as c FROM memories WHERE agent_id IN (${placeholders}) AND layer = ?`, [...visibleAgentIds, 'general'])?.c || 0;
     }
     return { total, core, working: total - core - peripheral, peripheral, general };
   }
-  getMemory(AgentId: string, memoryId: string): any | null { if (!this.db) return null; return this.db.prepare('SELECT * FROM memories WHERE id = ? AND agent_id = ?').get(memoryId, AgentId) || null; }
-  deleteMemory(AgentId: string, memoryId: string): boolean { if (!this.db) return false; const r = this.db.prepare('DELETE FROM memories WHERE id = ? AND agent_id = ?').run(memoryId, AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes > 0; }
-  deleteBulk(AgentId: string, memoryIds: string[]): number { if (!this.db) return 0; const placeholders = memoryIds.map(() => '?').join(','); const r = this.db.prepare(`DELETE FROM memories WHERE id IN (${placeholders}) AND agent_id = ?`).run(...memoryIds, AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes; }
-  clearMemories(AgentId: string, keepCore: boolean = true): number { if (!this.db) return 0; let r = keepCore ? this.db.prepare('DELETE FROM memories WHERE agent_id = ? AND tier != ?').run(AgentId, 'core') : this.db.prepare('DELETE FROM memories WHERE agent_id = ?').run(AgentId); this.cache.delete(`recall:${AgentId}`); return r.changes; }
+  getMemory(AgentId: string, memoryId: string): any | null { if (!this.db) return null; return this.queryOne('SELECT * FROM memories WHERE id = ? AND agent_id = ?', [memoryId, AgentId]); }
+  deleteMemory(AgentId: string, memoryId: string): boolean { if (!this.db) return false; const changes = this.run('DELETE FROM memories WHERE id = ? AND agent_id = ?', [memoryId, AgentId]); this.cache.delete(`recall:${AgentId}`); return changes > 0; }
+  deleteBulk(AgentId: string, memoryIds: string[]): number { if (!this.db) return 0; const placeholders = memoryIds.map(() => '?').join(','); const changes = this.run(`DELETE FROM memories WHERE id IN (${placeholders}) AND agent_id = ?`, [...memoryIds, AgentId]); this.cache.delete(`recall:${AgentId}`); return changes; }
+  clearMemories(AgentId: string, keepCore: boolean = true): number { if (!this.db) return 0; const changes = keepCore ? this.run('DELETE FROM memories WHERE agent_id = ? AND tier != ?', [AgentId, 'core']) : this.run('DELETE FROM memories WHERE agent_id = ?', [AgentId]); this.cache.delete(`recall:${AgentId}`); return changes; }
   updateMemory(AgentId: string, memoryId: string, content: string): boolean { 
     const safe = normalizeText(content).replace(/</g, '&lt;').replace(/>/g, '&gt;'); 
     const isCore = isCoreKeyword(safe, this.config.coreKeywords);
     const tier = getTier(isCore ? 1.0 : 0.5, 1, 0, this.config.tier);
-    const r = this.db!.prepare('UPDATE memories SET content = ?, tier = ?, layer = ?, keywords = ?, importance = ?, last_accessed = ? WHERE id = ? AND agent_id = ?').run(safe, tier, isCore ? 'core' : 'general', extractKeywords(safe), isCore ? 1.0 : 0.5, Date.now(), memoryId, AgentId); 
+    const changes = this.run('UPDATE memories SET content = ?, tier = ?, layer = ?, keywords = ?, importance = ?, last_accessed = ? WHERE id = ? AND agent_id = ?', [safe, tier, isCore ? 'core' : 'general', extractKeywords(safe), isCore ? 1.0 : 0.5, Date.now(), memoryId, AgentId]); 
     this.cache.delete(`recall:${AgentId}`); 
-    return r.changes > 0; 
+    return changes > 0; 
   }
   
   exportMemories(AgentId: string): any[] { 

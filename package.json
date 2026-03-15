@@ -1,13 +1,13 @@
 {
   "name": "algo-memory",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "纯算法长期记忆插件 - 默认启用LLM / 支持多模型",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "postinstall": "npm rebuild better-sqlite3",
+    "postinstall": "node -e \"const fs=require('fs');const s=fs.readFileSync('node_modules/sql.js/dist/sql-wasm.wasm');fs.writeFileSync('dist/sql-wasm.wasm',s);\"",
     "algo": "node cli.cjs"
   },
   "keywords": [
@@ -25,7 +25,7 @@
   "dependencies": {
     "@sinclair/typebox": "^0.32.0",
     "lru-cache": "^7.18.3",
-    "better-sqlite3": "^11.7.0"
+    "sql.js": "^1.11.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
@@ -34,7 +34,7 @@
   "openclaw": {
     "id": "algo-memory",
     "extensions": [
-      "./src/index.ts"
+      "./dist/index.js"
     ],
     "installDependencies": true
   },
