@@ -742,11 +742,11 @@ class MemoryPlugin {
     let memories;
     if (visibleAgentIds.includes('%')) {
       // 可以看全部
-      memories = this.db!.prepare("SELECT * FROM memories ORDER BY CASE tier WHEN 'core' THEN 0 WHEN 'working' THEN 1 ELSE 2 END, importance DESC, access_count DESC LIMIT ?").all(this.config.maxResults * 3) as any[];
+      memories = this.queryAll("SELECT * FROM memories ORDER BY CASE tier WHEN 'core' THEN 0 WHEN 'working' THEN 1 ELSE 2 END, importance DESC, access_count DESC LIMIT ?", [this.config.maxResults * 3]);
     } else {
       // 只能看指定的几个
       const placeholders = visibleAgentIds.map(() => '?').join(',');
-      memories = this.db!.prepare(`SELECT * FROM memories WHERE agent_id IN (${placeholders}) ORDER BY CASE tier WHEN 'core' THEN 0 WHEN 'working' THEN 1 ELSE 2 END, importance DESC, access_count DESC LIMIT ?`).all(...visibleAgentIds, this.config.maxResults * 3) as any[];
+      memories = this.queryAll(`SELECT * FROM memories WHERE agent_id IN (${placeholders}) ORDER BY CASE tier WHEN 'core' THEN 0 WHEN 'working' THEN 1 ELSE 2 END, importance DESC, access_count DESC LIMIT ?`, [...visibleAgentIds, this.config.maxResults * 3]);
     }
 
     if (this.config.recencyDecay) {
@@ -814,22 +814,22 @@ class MemoryPlugin {
       if (ftsQuery) {
         let results;
         if (visibleAgentIds.includes('%')) {
-          results = this.db!.prepare(`
+          results = this.queryAll(`
             SELECT m.* FROM memories m
             JOIN memories_fts fts ON m.id = fts.id
             WHERE memories_fts MATCH ?
             ORDER BY bm25(memories_fts) DESC, m.importance DESC
             LIMIT 20
-          `).all(ftsQuery);
+          `, [ftsQuery]);
         } else {
           const placeholders = visibleAgentIds.map(() => '?').join(',');
-          results = this.db!.prepare(`
+          results = this.queryAll(`
             SELECT m.* FROM memories m
             JOIN memories_fts fts ON m.id = fts.id
             WHERE m.agent_id IN (${placeholders}) AND memories_fts MATCH ?
             ORDER BY bm25(memories_fts) DESC, m.importance DESC
             LIMIT 20
-          `).all(...visibleAgentIds, ftsQuery);
+          `, [...visibleAgentIds, ftsQuery]);
         }
         if (results.length > 0) return results;
       }
@@ -839,10 +839,10 @@ class MemoryPlugin {
     // 备用：LIKE 查询
     const q = `%${query}%`;
     if (visibleAgentIds.includes('%')) {
-      return this.db!.prepare('SELECT * FROM memories WHERE (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20').all(q, q) as any[];
+      return this.queryAll('SELECT * FROM memories WHERE (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20', [q, q]);
     }
     const placeholders = visibleAgentIds.map(() => '?').join(',');
-    return this.db!.prepare(`SELECT * FROM memories WHERE agent_id IN (${placeholders}) AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20`).all(...visibleAgentIds, q, q) as any[];
+    return this.queryAll(`SELECT * FROM memories WHERE agent_id IN (${placeholders}) AND (content LIKE ? OR keywords LIKE ?) ORDER BY importance DESC LIMIT 20`, [...visibleAgentIds, q, q]);
   }
   getStats(AgentId: string): { total: number; core: number; working: number; peripheral: number; general: number } {
     if (!this.db) return { total: 0, core: 0, working: 0, peripheral: 0, general: 0 };
@@ -890,8 +890,8 @@ class MemoryPlugin {
     for (const m of memories) {
       try {
         const tier = getTier(m.importance || 0.5, m.access_count || 1, 0, this.config.tier);
-        this.db.prepare('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-          m.id || generateId(), AgentId, m.scope || 'global', m.content, m.type || 'other', tier, m.layer || 'general', m.keywords || '', m.importance || 0.5, m.access_count || 1, m.created_at || Date.now(), m.last_accessed || Date.now(), m.content_hash || hashContent(m.content), m.metadata || null
+        this.run('INSERT INTO memories (id, agent_id, scope, content, type, tier, layer, keywords, importance, access_count, created_at, last_accessed, content_hash, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 
+          [m.id || generateId(), AgentId, m.scope || 'global', m.content, m.type || 'other', tier, m.layer || 'general', m.keywords || '', m.importance || 0.5, m.access_count || 1, m.created_at || Date.now(), m.last_accessed || Date.now(), m.content_hash || hashContent(m.content), m.metadata || null]
         );
         imported++;
       } catch (e) { /* ignore */ }
